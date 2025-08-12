@@ -2,17 +2,39 @@ import argparse, os, re, subprocess, sys, threading
 from typing import List, Tuple
 
 # ---------------- Utility ----------------
+
+def _popen_hidden_kwargs():
+    # Hide console windows on Windows when running as a GUI app
+    if os.name == "nt" and (getattr(sys, "frozen", False) or getattr(sys, "stderr", None) is None):
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        CREATE_NO_WINDOW = 0x08000000
+        return {"startupinfo": si, "creationflags": CREATE_NO_WINDOW}
+    return {}
+
 def ffprobe_duration(path: str) -> float:
-    return float(subprocess.check_output([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", path
-    ]).decode().strip())
+    return float(subprocess.check_output(
+        ["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1", path],
+        text=True, **_popen_hidden_kwargs()
+    ).strip())
 
 
-def run_ffmpeg_progress(cmd: List[str], total: float, desc: str) -> str:
-    """Run ffmpeg command and display a simple progress bar."""
+def _patch_ffmpeg_path():
+    import sys, os
+    base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__))
+    ffdir = os.path.join(base, "ffmpeg")
+    if os.path.isdir(ffdir):
+        os.environ["PATH"] = ffdir + os.pathsep + os.environ.get("PATH", "")
+_patch_ffmpeg_path()
+
+
+def run_ffmpeg_progress(cmd: List[str], total: float, desc: str, on_progress=None) -> str:
+    """Run ffmpeg command and display a simple progress bar.
+    If on_progress is provided, it will be called with a float in [0,1].
+    """
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, bufsize=1)
+                        text=True, bufsize=1, **_popen_hidden_kwargs())
+
 
     err_lines: List[str] = []
 
@@ -22,11 +44,14 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str) -> str:
 
     threading.Thread(target=_stderr_reader, daemon=True).start()
 
-    bar_len = 40
-    print(f"{desc}:", file=sys.stderr)
+    # console may be None in a windowed app
+    err_stream = sys.stderr if getattr(sys, "stderr", None) else None
 
-    def _parse_hms(s: str) -> float:
-        # 00:01:23.456789 -> seconds
+    bar_len = 40
+    if err_stream:
+        print(f"{desc}:", file=err_stream)
+
+    def _parse_hms(s: str):
         s = s.strip()
         if s == "N/A":
             return None
@@ -38,36 +63,41 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str) -> str:
         if line == "" and proc.poll() is not None:
             break
 
-        if line.startswith("out_time_ms="):
+        out_time = None
+        if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
             val = line.split("=", 1)[1].strip()
-            if val == "N/A":
-                continue
-            out_time = float(val) / 1_000_000.0  # ffmpeg uses microseconds here
-        elif line.startswith("out_time_us="):
-            val = line.split("=", 1)[1].strip()
-            if val == "N/A":
-                continue
-            out_time = float(val) / 1_000_000.0
+            if val != "N/A":
+                out_time = float(val) / 1_000_000.0
         elif line.startswith("out_time="):
             sec = _parse_hms(line.split("=", 1)[1])
-            if sec is None:
-                continue
-            out_time = sec
-        else:
+            if sec is not None:
+                out_time = sec
+
+        if out_time is None:
             continue
 
+        frac = 0.0
         if total and total > 0:
             frac = min(max(out_time / total, 0.0), 1.0)
-        else:
-            # if total is unknown, just avoid division-by-zero and show indeterminate-ish bar
-            frac = 0.0
 
-        filled = int(bar_len * frac)
-        bar = "#" * filled + "-" * (bar_len - filled)
-        sys.stderr.write(f"\r[{bar}] {frac*100:5.1f}%")
-        sys.stderr.flush()
+        # console progress (only if a console exists)
+        if err_stream:
+            filled = int(bar_len * frac)
+            bar = "#" * filled + "-" * (bar_len - filled)
+            err_stream.write(f"\r[{bar}] {frac*100:5.1f}%")
+            err_stream.flush()
 
-    sys.stderr.write("\n")
+        # GUI callback
+        if on_progress:
+            try:
+                on_progress(frac)
+            except Exception:
+                pass
+
+    if err_stream:
+        err_stream.write("\n")
+        err_stream.flush()
+
     proc.wait()
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
