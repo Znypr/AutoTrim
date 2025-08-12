@@ -8,6 +8,7 @@ A Python tool to automatically remove low-volume pauses from a video using FFmpe
 - Lossless cutting using FFmpeg (no re-encoding).
 - Optional audio loudness histogram generation.
 - Progress bar for detection, processing, and rendering steps.
+- Windows taskbar progress indicator when the window is minimized.
 
 ## Requirements
 - Python 3.8+
