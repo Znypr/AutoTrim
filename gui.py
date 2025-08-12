@@ -11,6 +11,7 @@ except ImportError:  # fallback if tkinterdnd2 isn't installed
     DND_FILES = "DND_Files"
 
 import trim
+from taskbar import TaskbarProgress
 
 
 def _load_defaults():
@@ -48,6 +49,7 @@ class AutoTrimApp(TkinterDnD):
         self.pad = tk.DoubleVar(value=defaults["pad"])
         self.keep = tk.DoubleVar(value=defaults["keep"])
         self.progress = tk.DoubleVar(value=0.0)
+        self._taskbar = TaskbarProgress(self.winfo_id())
 
         self._build_ui(ranges)
 
@@ -105,12 +107,14 @@ class AutoTrimApp(TkinterDnD):
         try:
             self.progress_bar.config(mode="indeterminate")
             self.progress_bar.start()
+            self._taskbar.indeterminate()
             output_dir = os.path.join(os.path.expanduser("~"), "Downloads")
             base = os.path.splitext(os.path.basename(self.video_path.get()))[0]
             out_path = os.path.join(output_dir, f"{base}_trimmed.mp4")
 
             def update_prog(p):
                 self.progress.set(p * 100)
+                self._taskbar.set(int(p * 100), 100)
 
             # detection + trimming
             starts, ends, _ = trim.detect_silences(self.video_path.get(), self.noise.get(), self.silence.get())
@@ -120,6 +124,7 @@ class AutoTrimApp(TkinterDnD):
             self.progress_bar.stop()
             self.progress_bar.config(mode="determinate")
             self.progress.set(0)
+            self._taskbar.set(0, 100)
             trim.cut_and_concat(self.video_path.get(), segs, out_path, progress=update_prog)
             messagebox.showinfo("Done", f"Saved to {out_path}")
         except Exception as e:
@@ -127,6 +132,7 @@ class AutoTrimApp(TkinterDnD):
         finally:
             self.progress.set(0)
             self.progress_bar.stop()
+            self._taskbar.clear()
 
 
 if __name__ == "__main__":

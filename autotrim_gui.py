@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import trim
+from taskbar import TaskbarProgress
 
 SPOTIFY_BG = "#121212"
 SPOTIFY_CARD = "#181818"
@@ -84,6 +85,7 @@ class AutoTrimApp(tk.Tk):
         self.status_txt= tk.StringVar(value="Idle.")
         self.thumb_img = None
         self.thumb_path = None
+        self.tb_progress = TaskbarProgress(self.winfo_id())
         self._build_style()
         self._build_ui()
 
@@ -257,11 +259,13 @@ class AutoTrimApp(tk.Tk):
     def _update_step(self, label: str, frac: float) -> None:
         self.progress.set(frac)
         self.status_txt.set(f"{label} {int(frac*100)}%")
+        self.tb_progress.set(int(frac * 100), 100)
 
     def _finish_message(self, msg: str) -> None:
         self.status_txt.set(msg)
         self.start_btn.config(state="normal")
         self.is_running = False
+        self.tb_progress.clear()
 
     def _finish_success(self, out_path: str) -> None:
         self.progress.set(1.0)
