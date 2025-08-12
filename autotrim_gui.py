@@ -44,6 +44,15 @@ def _fmt_dur(sec):
     s = int(sec % 60)
     return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:d}:{s:02d}"
 
+
+# --- Ensure correct taskbar icon / grouping on Windows ---
+import ctypes
+try:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Znypr.AutoTrim")
+except Exception:
+    pass
+
+
 class AutoTrimApp(tk.Tk):
     def __init__(self):
         super().__init__()
