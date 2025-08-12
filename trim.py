@@ -1,6 +1,5 @@
 import argparse, os, re, subprocess, sys, tempfile
 from typing import List, Tuple
-import matplotlib.pyplot as plt
 
 # ---------------- Utility ----------------
 def run(cmd: List[str], **kw):
@@ -108,7 +107,8 @@ def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
     return [(x, y) for x, y in merged if (y - x) >= keep]
 
 # ---------------- Cutting & Concatenation ----------------
-def cut_and_concat(input_path: str, segments: List[Tuple[float, float]], output_path: str):
+def cut_and_concat(input_path: str, segments: List[Tuple[float, float]],
+                   output_path: str, progress=None):
     """
     Frame-accurate trimming via trim/atrim + concat (single re-encode).
     Eliminates duplicate/overlapping audio-video at joins.
@@ -138,9 +138,11 @@ def cut_and_concat(input_path: str, segments: List[Tuple[float, float]], output_
     concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
     filter_complex = ";".join(vf + af + [f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"])
 
+    total_len = sum(et - st for st, et in clips)
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cmd = [
-        "ffmpeg","-hide_banner","-nostats","-y",
+        "ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y",
         "-i", input_path,
         "-filter_complex", filter_complex,
         "-map","[v]","-map","[a]",
@@ -149,9 +151,35 @@ def cut_and_concat(input_path: str, segments: List[Tuple[float, float]], output_
         "-movflags","+faststart",
         output_path
     ]
-    rc = subprocess.run(cmd).returncode
+    if progress:
+        progress(0.0)
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, bufsize=1) as proc:
+            for line in proc.stdout:
+                if line.startswith("out_time_ms="):
+                    out_ms = int(line.strip().split("=", 1)[1])
+                    progress(min(out_ms / (total_len * 1_000_000), 1.0))
+            rc = proc.wait()
+    else:
+        rc = subprocess.run(cmd).returncode
     if rc != 0:
         sys.exit(rc)
+
+
+def trim_video(input_path: str, noise: str, silence: float, pad: float,
+               keep: float, output_path: str, progress=None) -> str:
+    """Trim a video using provided parameters and write ``output_path``.
+
+    ``progress`` receives a float between 0 and 1 representing
+    concatenation progress.
+    """
+    starts, ends, _ = detect_silences(input_path, noise, silence)
+    dur = ffprobe_duration(input_path)
+    segments = build_speaking_segments(starts, ends, dur, pad, keep)
+    if not segments:
+        raise RuntimeError("No keepable segments; nothing to output.")
+    cut_and_concat(input_path, segments, output_path, progress)
+    return output_path
 
 
 # ---------------- Histogram ----------------
@@ -181,6 +209,11 @@ def plot_histogram(vals: List[float], binsize: int, min_db: int, max_db: int, ou
     if not vals:
         print("[hist] No audio levels found, skipping histogram.")
         return
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception:
+        print("[hist] matplotlib is required to generate a histogram.")
+        return
     plt.hist(vals, bins=range(min_db, max_db + binsize, binsize), edgecolor="black")
     plt.xlabel("RMS Level (dBFS)")
     plt.ylabel("Frame Count")
@@ -198,18 +231,22 @@ def main():
 
     if a.hist:
         vals = analyze_levels(a.input)
-        plot_histogram(vals, a.bins, a.min_db, a.max_db,
-                       os.path.join(a.outdir, os.path.splitext(os.path.basename(out_final))[0] + "_hist.png"))
+        plot_histogram(
+            vals,
+            a.bins,
+            a.min_db,
+            a.max_db,
+            os.path.join(
+                a.outdir,
+                os.path.splitext(os.path.basename(out_final))[0] + "_hist.png",
+            ),
+        )
 
-    starts, ends, _ = detect_silences(a.input, a.noise, a.silence)
-    dur = ffprobe_duration(a.input)
-    segments = build_speaking_segments(starts, ends, dur, a.pad, a.keep)
-
-    if not segments:
-        print("No keepable segments; nothing to output.")
+    try:
+        trim_video(a.input, a.noise, a.silence, a.pad, a.keep, out_final)
+    except RuntimeError as e:
+        print(e)
         sys.exit(0)
-
-    cut_and_concat(a.input, segments, out_final)
     print(f"✔ Wrote {out_final}")
 
 if __name__ == "__main__":
