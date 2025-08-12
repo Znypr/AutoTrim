@@ -7,15 +7,16 @@ A Python tool to automatically remove low-volume pauses from a video using FFmpe
 - Adjustable parameters: silence threshold, min silence length, padding, and min clip keep length.
 - Lossless cutting using FFmpeg (no re-encoding).
 - Optional audio loudness histogram generation.
+- Progress bar for detection, processing, and rendering steps.
 
 ## Requirements
 - Python 3.8+
 - FFmpeg installed and available in PATH
 - Python packages:
-  - matplotlib
+  - matplotlib (only if using `--hist`)
 
 ## Installation
-pip install tqdm matplotlib
+pip install matplotlib  # optional, only for histogram support
 
 ## Usage
 Basic example:
