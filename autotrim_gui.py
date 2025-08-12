@@ -1,8 +1,13 @@
-import os, sys, tempfile, math
+import os
+import sys
+import tempfile
+import threading
+import subprocess
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+
 import trim
-import subprocess
 
 SPOTIFY_BG = "#121212"
 SPOTIFY_CARD = "#181818"
@@ -249,18 +254,35 @@ class AutoTrimApp(tk.Tk):
         except Exception:
             self.thumb_canvas.configure(image="", width=0, height=0)
 
+    def _update_step(self, label: str, frac: float) -> None:
+        self.progress.set(frac)
+        self.status_txt.set(f"{label} {int(frac*100)}%")
+
+    def _finish_message(self, msg: str) -> None:
+        self.status_txt.set(msg)
+        self.start_btn.config(state="normal")
+        self.is_running = False
+
+    def _finish_success(self, out_path: str) -> None:
+        self.progress.set(1.0)
+        self._finish_message(f"\u2714 Done. Saved to: {out_path}")
+
+    def _finish_error(self, err) -> None:
+        self._finish_message(f"Error: {err}")
+        messagebox.showerror("AutoTrim error", str(err))
+
     # ----- run pipeline -----
     def _start(self):
-        if self.is_running: return
+        if self.is_running:
+            return
         path = self.selected_file.get()
         if not path:
             messagebox.showwarning("No file", "Please select a video.")
             return
         self.is_running = True
-        self.progress.set(0.0)
-        self.status_txt.set("Step 1/2 — Detecting silences… 0%")
+        self._update_step("Step 1/2 — Detecting silences…", 0.0)
         self.start_btn.config(state="disabled")
-        self.after(10, lambda: self._run_pipeline(path))
+        threading.Thread(target=self._run_pipeline, args=(path,), daemon=True).start()
 
     def _run_pipeline(self, input_path):
         try:
@@ -268,8 +290,7 @@ class AutoTrimApp(tk.Tk):
 
             # Step 1: detect (reusing progress bar with textual status)
             def on_detect(frac):
-                self.progress.set(frac)
-                self.status_txt.set(f"Step 1/2 — Detecting silences… {int(frac*100)}%")
+                self.after(0, self._update_step, "Step 1/2 — Detecting silences…", frac)
             # Run ffmpeg detection with progress
             noise = f"{self.noise_db.get()}dB"
             silence = float(self.silence_s.get())
@@ -289,14 +310,11 @@ class AutoTrimApp(tk.Tk):
             keep = float(self.keep_s.get())
             segments = trim.build_speaking_segments(starts, ends, dur, pad, keep)
             if not segments:
-                self.status_txt.set("No keepable segments found.")
-                self.is_running = False
-                self.start_btn.config(state="normal")
+                self.after(0, self._finish_message, "No keepable segments found.")
                 return
 
             # Step 2: render
-            self.progress.set(0.0)
-            self.status_txt.set("Step 2/2 — Rendering… 0%")
+            self.after(0, self._update_step, "Step 2/2 — Rendering…", 0.0)
             out = os.path.join(os.path.expanduser("~"), "Downloads",
                                f"{os.path.splitext(os.path.basename(input_path))[0]}_trimmed.mp4")
 
@@ -321,18 +339,11 @@ class AutoTrimApp(tk.Tk):
                 out
             ]
             def on_render(frac):
-                self.progress.set(frac)
-                self.status_txt.set(f"Step 2/2 — Rendering… {int(frac*100)}%")
+                self.after(0, self._update_step, "Step 2/2 — Rendering…", frac)
             trim.run_ffmpeg_progress(cmd, total, "render", on_progress=on_render)
-
-            self.progress.set(1.0)
-            self.status_txt.set(f"✔ Done. Saved to: {out}")
+            self.after(0, self._finish_success, out)
         except Exception as e:
-            self.status_txt.set(f"Error: {e}")
-            messagebox.showerror("AutoTrim error", str(e))
-        finally:
-            self.is_running = False
-            self.start_btn.config(state="normal")
+            self.after(0, self._finish_error, e)
 
             
 if __name__ == "__main__":
