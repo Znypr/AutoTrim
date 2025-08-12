@@ -1,16 +1,45 @@
-import argparse, os, re, subprocess, sys, tempfile
+import argparse, os, re, subprocess, sys, threading
 from typing import List, Tuple
-import matplotlib.pyplot as plt
 
 # ---------------- Utility ----------------
-def run(cmd: List[str], **kw):
-    return subprocess.run(cmd, **kw)
-
 def ffprobe_duration(path: str) -> float:
     return float(subprocess.check_output([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", path
     ]).decode().strip())
+
+
+def run_ffmpeg_progress(cmd: List[str], total: float, desc: str) -> str:
+    """Run ffmpeg command and display a simple progress bar."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1)
+
+    err_lines: List[str] = []
+
+    def _stderr_reader():
+        for line in proc.stderr:
+            err_lines.append(line)
+
+    threading.Thread(target=_stderr_reader, daemon=True).start()
+
+    bar_len = 40
+    print(f"{desc}:", file=sys.stderr)
+    while True:
+        line = proc.stdout.readline()
+        if line == "" and proc.poll() is not None:
+            break
+        if line.startswith("out_time_ms="):
+            out_time = float(line.split("=")[1]) / 1_000_000
+            frac = min(out_time / total, 1.0)
+            filled = int(bar_len * frac)
+            bar = "#" * filled + "-" * (bar_len - filled)
+            sys.stderr.write(f"\r[{bar}] {frac*100:5.1f}%")
+            sys.stderr.flush()
+    sys.stderr.write("\n")
+    proc.wait()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+    return "".join(err_lines)
 
 # ---------------- Argument Parsing ----------------
 def parse_args():
@@ -52,22 +81,19 @@ def _noise_for_ffmpeg(noise: str) -> str:
     return s
 
 
-def detect_silences(input_path: str, noise: str, min_silence: float) -> Tuple[List[float], List[float], str]:
+def detect_silences(input_path: str, noise: str, min_silence: float,
+                    dur: float) -> Tuple[List[float], List[float], str]:
     noise_norm = _noise_for_ffmpeg(noise)
-    with tempfile.TemporaryDirectory() as td:
-        slog = os.path.join(td, "silence.log")
-        # ensure the file is closed/flushed before we read it
-        with open(slog, "w", encoding="utf-8") as err:
-            run([
-                "ffmpeg","-hide_banner","-nostats","-y","-i", input_path,
-                "-af", f"silencedetect=noise={noise_norm}:d={min_silence}",
-                "-f","null","-"
-            ], stderr=err)
-        txt = open(slog, "r", encoding="utf-8", errors="ignore").read()
-
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
+        "-i", input_path,
+        "-af", f"silencedetect=noise={noise_norm}:d={min_silence}",
+        "-f", "null", "-"
+    ]
+    txt = run_ffmpeg_progress(cmd, dur, "detect")
     starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+(?:\.\d+)?)", txt)]
     ends   = [float(x) for x in re.findall(r"silence_end:\s*(\d+(?:\.\d+)?)",   txt)]
-    print(f"[silence] noise={noise_norm} silence={min_silence} → {len(starts)} starts, {len(ends)} ends")
+    print(f"[silence] noise={noise_norm} silence={min_silence} \u2192 {len(starts)} starts, {len(ends)} ends")
     return starts, ends, txt
 
 # ---------------- Segment Building ----------------
@@ -140,32 +166,31 @@ def cut_and_concat(input_path: str, segments: List[Tuple[float, float]], output_
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cmd = [
-        "ffmpeg","-hide_banner","-nostats","-y",
+        "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
         "-i", input_path,
         "-filter_complex", filter_complex,
-        "-map","[v]","-map","[a]",
-        "-c:v","libx264","-preset","veryfast","-crf","20",
-        "-c:a","aac","-b:a","160k",
-        "-movflags","+faststart",
-        output_path
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-b:a", "160k",
+        "-movflags", "+faststart",
+        output_path,
     ]
-    rc = subprocess.run(cmd).returncode
-    if rc != 0:
-        sys.exit(rc)
+    total = sum(et - st for st, et in clips)
+    try:
+        run_ffmpeg_progress(cmd, total, "render")
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
 
 
 # ---------------- Histogram ----------------
-def analyze_levels(input_path: str) -> List[float]:
+def analyze_levels(input_path: str, dur: float) -> List[float]:
     def run_fg(fg: str) -> str:
-        with tempfile.TemporaryDirectory() as td:
-            path = os.path.join(td, "levels.log")
-            with open(path, "w", encoding="utf-8") as f:
-                subprocess.run([
-                    "ffmpeg", "-hide_banner", "-nostats", "-y",
-                    "-i", input_path, "-vn", "-sn",
-                    "-af", fg, "-f", "null", "-"
-                ], stdout=f, stderr=f)
-            return open(path, "r", encoding="utf-8", errors="ignore").read()
+        cmd = [
+            "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
+            "-i", input_path, "-vn", "-sn",
+            "-af", fg, "-f", "null", "-"
+        ]
+        return run_ffmpeg_progress(cmd, dur, "levels")
 
     txt = run_fg("aformat=channel_layouts=mono,"
                  "astats=metadata=1:reset=1,"
@@ -181,6 +206,7 @@ def plot_histogram(vals: List[float], binsize: int, min_db: int, max_db: int, ou
     if not vals:
         print("[hist] No audio levels found, skipping histogram.")
         return
+    import matplotlib.pyplot as plt  # local import to avoid dependency when unused
     plt.hist(vals, bins=range(min_db, max_db + binsize, binsize), edgecolor="black")
     plt.xlabel("RMS Level (dBFS)")
     plt.ylabel("Frame Count")
@@ -194,15 +220,23 @@ def main():
     a = parse_args()
     os.makedirs(a.outdir, exist_ok=True)
 
+    dur = ffprobe_duration(a.input)
     out_final = os.path.join(a.outdir, build_output_name(a.input, a))
 
     if a.hist:
-        vals = analyze_levels(a.input)
-        plot_histogram(vals, a.bins, a.min_db, a.max_db,
-                       os.path.join(a.outdir, os.path.splitext(os.path.basename(out_final))[0] + "_hist.png"))
+        vals = analyze_levels(a.input, dur)
+        plot_histogram(
+            vals,
+            a.bins,
+            a.min_db,
+            a.max_db,
+            os.path.join(
+                a.outdir,
+                os.path.splitext(os.path.basename(out_final))[0] + "_hist.png",
+            ),
+        )
 
-    starts, ends, _ = detect_silences(a.input, a.noise, a.silence)
-    dur = ffprobe_duration(a.input)
+    starts, ends, _ = detect_silences(a.input, a.noise, a.silence, dur)
     segments = build_speaking_segments(starts, ends, dur, a.pad, a.keep)
 
     if not segments:
