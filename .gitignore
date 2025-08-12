@@ -1,2 +1,38 @@
-out/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Virtual env
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# FFmpeg binaries & other big EXEs (keep them out of git)
+ffmpeg/
+*.exe
+!scripts/*.exe     # (optional: allow specific tools if you really need)
+
+# Media outputs
 videos/
+out/
+Downloads/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.png
+*.jpg
