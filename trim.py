@@ -22,9 +22,9 @@ def parse_args():
     p.add_argument("--keep", type=float, help="Drop kept clips shorter than this (sec)")
     p.add_argument("--outdir", default="out", help="Output directory")
     p.add_argument("--hist", action="store_true", help="Generate histogram of RMS levels")
-    p.add_argument("--bins", type=int, default=5, help="Histogram bin width in dB")
-    p.add_argument("--min_db", type=int, default=-90, help="Minimum dB for histogram")
-    p.add_argument("--max_db", type=int, default=0, help="Maximum dB for histogram")
+    p.add_argument("--bins", type=int,  help="Histogram bin width in dB")
+    p.add_argument("--min_db", type=int,  help="Minimum dB for histogram")
+    p.add_argument("--max_db", type=int, help="Maximum dB for histogram")
     return p.parse_args()
 
 # ---------------- Filename Builder ----------------
@@ -32,7 +32,7 @@ def build_output_name(input_path, args):
     base = os.path.splitext(os.path.basename(input_path))[0]
 
     # format parameters cleanly for filename
-    noise_val = str(args.noise).lower().replace("db", "").replace("-", "n")
+    noise_val = str(args.noise).lower()
     suffix = "_".join([noise_val])
     return f"{base}_{suffix}.mp4"
 

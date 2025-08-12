@@ -5,28 +5,28 @@
       "name": "Trim video (no hist)",
       "type": "python",
       "request": "launch",
-      "program": "${workspaceFolder}/trim_silence.py",
+      "program": "${workspaceFolder}/trim.py",
       "console": "integratedTerminal",
       "args": [
         "${workspaceFolder}/videos/sample.mp4",
         "--noise=${input:noiseValue}",
-        "--min", "${input:minSilence}",
+        "--silence", "${input:minSilence}",
         "--pad", "${input:pad}",
-        "--minkeep", "${input:minKeep}"
+        "--keep", "${input:minKeep}"
       ]
     },
     {
       "name": "Trim video (with hist)",
       "type": "python",
       "request": "launch",
-      "program": "${workspaceFolder}/trim_silence.py",
+      "program": "${workspaceFolder}/trim.py",
       "console": "integratedTerminal",
       "args": [
         "${workspaceFolder}/videos/sample.mp4",
         "--noise=${input:noiseValue}",
-        "--min", "${input:minSilence}",
+        "--silence", "${input:minSilence}",
         "--pad", "${input:pad}",
-        "--minkeep", "${input:minKeep}",
+        "--keep", "${input:minKeep}",
         "--hist",
         "--bin", "${input:binWidth}",
         "--min_db", "${input:minDb}",
@@ -40,7 +40,7 @@
       "type": "pickString",
       "description": "Silence threshold (dB, no suffix)",
       "options": ["-20","-21","-22", "-23", "-24", "-25", "-27.5"],
-      "default": "-22"
+      "default": "-23"
     },
     {
       "id": "minSilence",

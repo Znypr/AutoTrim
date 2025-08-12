@@ -6,7 +6,7 @@
       "type": "shell",
       "command": "python",
       "args": [
-        "trim_silence.py", "videos/sample.mp4",
+        "trim.py", "videos/sample.mp4",
         "--noise=-32", "--min", "0.4", "--pad", "0.12", "--minkeep", "0.25", "--tag", "s1"
       ]
     },
@@ -15,7 +15,7 @@
       "type": "shell",
       "command": "python",
       "args": [
-        "trim_silence.py", "videos/sample.mp4",
+        "trim.py", "videos/sample.mp4",
         "--noise=-35", "--min", "0.6", "--pad", "0.15", "--minkeep", "0.25", "--tag", "s2"
       ]
     },
@@ -24,7 +24,7 @@
       "type": "shell",
       "command": "python",
       "args": [
-        "trim_silence.py", "videos/sample.mp4",
+        "trim.py", "videos/sample.mp4",
         "--noise=-40", "--min", "0.8", "--pad", "0.18", "--minkeep", "0.25", "--tag", "s3"
       ]
     },
