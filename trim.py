@@ -24,22 +24,55 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str) -> str:
 
     bar_len = 40
     print(f"{desc}:", file=sys.stderr)
+
+    def _parse_hms(s: str) -> float:
+        # 00:01:23.456789 -> seconds
+        s = s.strip()
+        if s == "N/A":
+            return None
+        hh, mm, ss = s.split(":")
+        return int(hh) * 3600 + int(mm) * 60 + float(ss)
+
     while True:
         line = proc.stdout.readline()
         if line == "" and proc.poll() is not None:
             break
+
         if line.startswith("out_time_ms="):
-            out_time = float(line.split("=")[1]) / 1_000_000
-            frac = min(out_time / total, 1.0)
-            filled = int(bar_len * frac)
-            bar = "#" * filled + "-" * (bar_len - filled)
-            sys.stderr.write(f"\r[{bar}] {frac*100:5.1f}%")
-            sys.stderr.flush()
+            val = line.split("=", 1)[1].strip()
+            if val == "N/A":
+                continue
+            out_time = float(val) / 1_000_000.0  # ffmpeg uses microseconds here
+        elif line.startswith("out_time_us="):
+            val = line.split("=", 1)[1].strip()
+            if val == "N/A":
+                continue
+            out_time = float(val) / 1_000_000.0
+        elif line.startswith("out_time="):
+            sec = _parse_hms(line.split("=", 1)[1])
+            if sec is None:
+                continue
+            out_time = sec
+        else:
+            continue
+
+        if total and total > 0:
+            frac = min(max(out_time / total, 0.0), 1.0)
+        else:
+            # if total is unknown, just avoid division-by-zero and show indeterminate-ish bar
+            frac = 0.0
+
+        filled = int(bar_len * frac)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        sys.stderr.write(f"\r[{bar}] {frac*100:5.1f}%")
+        sys.stderr.flush()
+
     sys.stderr.write("\n")
     proc.wait()
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
     return "".join(err_lines)
+
 
 # ---------------- Argument Parsing ----------------
 def parse_args():
