@@ -67,15 +67,15 @@
       "id": "binWidth",
       "type": "pickString",
       "description": "Histogram bin width (dB)",
-      "options": ["1", "2", "3", "5", "10"],
-      "default": "3"
+      "options": ["0.5","1", "2", "3", "5", "10"],
+      "default": "0.5"
     },
     {
       "id": "minDb",
       "type": "pickString",
       "description": "Histogram minimum dB",
-      "options": ["-60", "-40", "-30", "-25"],
-      "default": "-40"
+      "options": ["-60", "-40", "-35", "-30", "-25"],
+      "default": "-35"
     },
     {
       "id": "maxDb",
