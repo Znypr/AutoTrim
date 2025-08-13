@@ -109,14 +109,14 @@ def parse_args():
     p = argparse.ArgumentParser(description="Cut low-volume pauses from video (lossless).")
     p.add_argument("input", help="Input video file")
     p.add_argument("--noise", default="-20dB", help="Silence threshold, e.g. -35dB / -40dB")
-    p.add_argument("--silence", type=float, help="Min silence duration (sec)")
-    p.add_argument("--pad", type=float, help="Pad before/after speech (sec)")
-    p.add_argument("--keep", type=float, help="Drop kept clips shorter than this (sec)")
+    p.add_argument("--silence", type=float, default=0.5, help="Min silence duration (sec)")  # ← default
+    p.add_argument("--pad", type=float, default=0.15, help="Pad before/after speech (sec)")  # ← default
+    p.add_argument("--keep", type=float, default=0.25, help="Drop kept clips shorter than this (sec)")  # ← default
     p.add_argument("--outdir", default="out", help="Output directory")
     p.add_argument("--hist", action="store_true", help="Generate histogram of RMS levels")
-    p.add_argument("--bins", type=int,  help="Histogram bin width in dB")
-    p.add_argument("--min_db", type=int,  help="Minimum dB for histogram")
-    p.add_argument("--max_db", type=int, help="Maximum dB for histogram")
+    p.add_argument("--bins", type=int, default=2, help="Histogram bin width in dB")          # ← default
+    p.add_argument("--min_db", type=int, default=-60, help="Minimum dB for histogram")        # ← default
+    p.add_argument("--max_db", type=int, default=0, help="Maximum dB for histogram")          # ← default
     return p.parse_args()
 
 # ---------------- Filename Builder ----------------
@@ -272,8 +272,8 @@ def trim_video(input_path: str, noise: str, silence: float, pad: float,
     ``progress`` receives a float between 0 and 1 representing
     concatenation progress.
     """
-    starts, ends, _ = detect_silences(input_path, noise, silence)
     dur = ffprobe_duration(input_path)
+    starts, ends, _ = detect_silences(input_path, noise, silence, dur)
     segments = build_speaking_segments(starts, ends, dur, pad, keep)
     if not segments:
         raise RuntimeError("No keepable segments; nothing to output.")
@@ -286,20 +286,31 @@ def analyze_levels(input_path: str, dur: float) -> List[float]:
     def run_fg(fg: str) -> str:
         cmd = [
             "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
-            "-i", input_path, "-vn", "-sn",
+            "-i", input_path,
+            "-map", "0:a:0?",   # ← optional map: don’t error if no audio
+            "-vn", "-sn", "-dn",
             "-af", fg, "-f", "null", "-"
         ]
         return run_ffmpeg_progress(cmd, dur, "levels")
 
-    txt = run_fg("aformat=channel_layouts=mono,"
-                 "astats=metadata=1:reset=1,"
-                 "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:entry=frame")
-    vals = [float(x) for x in re.findall(r"RMS_level=([-+]?\d+(?:\.\d+)?)", txt)]
-    if not vals:
-        txt = run_fg("astats=metadata=1:reset=1,"
-                     "ametadata=mode=print:key=lavfi.astats.1.RMS_level:entry=frame")
-        vals = [float(x) for x in re.findall(r"RMS_level=([-+]?\d+(?:\.\d+)?)", txt)]
-    return vals
+    # Ask astats for both per-frame and overall
+    fg = "astats=metadata=1:reset=1:measure_overall=1"
+    txt = run_fg(fg)
+
+    # 1) Prefer per-frame RMS_level values
+    vals = [float(x) for x in re.findall(r"\bRMS_level=([-+]?\d+(?:\.\d+)?)\b", txt)]
+    if vals:
+        return vals
+
+    # 2) Fall back to overall RMS (repeat it a bit so the histogram has bars)
+    overall = re.findall(r"\bOverall\.RMS_level=([-+]?\d+(?:\.\d+)?)\b", txt)
+    if overall:
+        ov = float(overall[0])
+        return [ov] * 50  # make a small synthetic distribution
+
+    # 3) No audio or nothing measurable
+    return []
+
 
 def plot_histogram(vals: List[float], binsize: int, min_db: int, max_db: int, outpath: str):
     if not vals:
