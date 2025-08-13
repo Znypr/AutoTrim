@@ -28,7 +28,7 @@
         "--pad", "${input:pad}",
         "--keep", "${input:minKeep}",
         "--hist",
-        "--bin", "${input:binWidth}",
+        "--bins", "${input:binWidth}",
         "--min_db", "${input:minDb}",
         "--max_db", "${input:maxDb}"
       ]
