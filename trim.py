@@ -114,7 +114,14 @@ def parse_args():
     p.add_argument("--keep", type=float, default=0.25, help="Drop kept clips shorter than this (sec)")  # ← default
     p.add_argument("--outdir", default="out", help="Output directory")
     p.add_argument("--hist", action="store_true", help="Generate histogram of RMS levels")
-    p.add_argument("--bins", type=int, default=2, help="Histogram bin width in dB")          # ← default
+    p.add_argument(
+        "--bins",
+        "--bin",
+        dest="bins",
+        type=int,
+        default=2,
+        help="Histogram bin width in dB",
+    )  # ← default
     p.add_argument("--min_db", type=int, default=-60, help="Minimum dB for histogram")        # ← default
     p.add_argument("--max_db", type=int, default=0, help="Maximum dB for histogram")          # ← default
     return p.parse_args()
@@ -297,13 +304,22 @@ def analyze_levels(input_path: str, dur: float) -> List[float]:
     fg = "astats=metadata=1:reset=1:measure_overall=1"
     txt = run_fg(fg)
 
-    # 1) Prefer per-frame RMS_level values
-    vals = [float(x) for x in re.findall(r"\bRMS_level=([-+]?\d+(?:\.\d+)?)\b", txt)]
+    # 1) Prefer per-frame RMS level values (handle both legacy and newer ffmpeg text)
+    vals = [
+        float(x)
+        for x in re.findall(
+            r"RMS(?:_level| level dB)(?:=|:)\s*([-+]?\d+(?:\.\d+)?)",
+            txt,
+        )
+    ]
     if vals:
         return vals
 
     # 2) Fall back to overall RMS (repeat it a bit so the histogram has bars)
-    overall = re.findall(r"\bOverall\.RMS_level=([-+]?\d+(?:\.\d+)?)\b", txt)
+    overall = re.findall(
+        r"Overall(?:\.RMS_level| RMS level dB)(?:=|:)\s*([-+]?\d+(?:\.\d+)?)",
+        txt,
+    )
     if overall:
         ov = float(overall[0])
         return [ov] * 50  # make a small synthetic distribution
@@ -340,7 +356,7 @@ def main():
     out_final = os.path.join(a.outdir, build_output_name(a.input, a))
 
     if a.hist:
-        vals = analyze_levels(a.input)
+        vals = analyze_levels(a.input, dur)
 
         plot_histogram(
             vals,
