@@ -1,0 +1,19 @@
+{
+  "name": "autotrim",
+  "version": "0.1.0",
+  "main": "main.js",
+  "private": true,
+  "scripts": { "start": "electron .", "build": "electron-builder" },
+  "devDependencies": { "electron": "^30.0.0", "electron-builder": "^24.6.0" },
+  "dependencies": { "chart.js": "^4.4.0" },
+  "build": {
+    "appId": "com.znypr.autotrim",
+    "asar": true,
+    "files": ["**/*"],
+    "extraResources": [
+      { "from": "../python/dist/service.exe", "to": "service/service.exe" },
+      { "from": "../ffmpeg", "to": "service/ffmpeg" }
+    ],
+    "win": { "target": "nsis", "icon": "icon.ico" }
+  }
+}

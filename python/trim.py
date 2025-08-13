@@ -415,7 +415,7 @@ def plot_histogram(vals, binsize, min_db, max_db, outpath):
     plt.xlabel(f"RMS Level (dBFS) — bin width {b:.1f} dB")
     plt.ylabel("Percent of frames")
     plt.title("Audio Loudness Distribution (RMS, per-frame)")
-    plt.tight_layout()
+    plt.tight_layout(pad=0.8)
     plt.savefig(outpath)
     plt.close()
     print(f"[hist] Histogram saved to {outpath}")

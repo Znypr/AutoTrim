@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AutoTrim</title>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 img-src 'self' blob: data:;
+                 style-src 'self' 'unsafe-inline';
+                 script-src 'self';" />
+  <link rel="stylesheet" href="index.css" />
+</head>
+<body>
+  <!-- Title bar -->
+  <div class="titlebar">
+    <div class="appname">AutoTrim</div>
+    <!-- (Select button moved below thumbnail as requested) -->
+  </div>
+
+  <div class="shell">
+    <!-- LEFT: thumbnail + stats -->
+    <aside class="left">
+      <div class="card">
+        <div id="thumb" class="thumb skeleton"></div>
+        <div id="meta" class="meta">No file selected.</div>
+        <div class="import-progress" title="Importing…">
+          <div id="importBar"></div>
+        </div>
+        <button id="pickBtn" class="btn primary pick-below">Select video…</button>
+        <input id="fileInput" type="file" accept="video/*" style="display:none" />
+      </div>
+    </aside>
+
+    <!-- RIGHT: tabs -->
+    <section class="right">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="hist">Histogram</button>
+        <button class="tab-btn" data-tab="trim">Trim</button>
+      </div>
+
+      <div class="content">
+        <!-- HISTOGRAM TAB -->
+        <section id="tab-hist" class="tab active">
+          <div class="row">
+            <div class="card h-params">
+              <div class="panel-title">Parameters</div>
+
+              <!-- Double-thumb range -->
+              <div class="h-range">
+                <div class="range-labels">
+                  <span>Level range (dBFS)</span>
+                  <span id="rangeVals">—</span>
+                </div>
+                <div class="range-wrap">
+                  <div id="rangeFill" class="range-fill"></div>
+                  <input id="minDb" type="range" min="-80" max="-5" step="1" value="-50" />
+                  <input id="maxDb" type="range" min="-80" max="-5" step="1" value="-5" />
+                </div>
+              </div>
+
+              <div style="font-size:12px;color:var(--muted)">
+                Auto-updates on file import and when the range changes.
+              </div>
+            </div>
+
+            <div class="panel">
+              <canvas id="histChart"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <!-- TRIM TAB -->
+        <section id="tab-trim" class="tab">
+          <div class="row">
+            <div class="card">
+              <div class="panel-title">Parameters</div>
+              <div class="v-sliders">
+                <div class="vcol">
+                  <div class="vlabel">Noise (dBFS)</div>
+                  <input id="noiseDb" type="range" min="-35" max="-10" step="0.1" value="-23" class="vslider" />
+                  <div class="vval" id="noiseDbVal">-23.0</div>
+                </div>
+                <div class="vcol">
+                  <div class="vlabel">Silence (s)</div>
+                  <input id="silenceS" type="range" min="0.2" max="2.0" step="0.05" value="0.5" class="vslider" />
+                  <div class="vval" id="silenceSVal">0.50</div>
+                </div>
+                <div class="vcol">
+                  <div class="vlabel">Pad (s)</div>
+                  <input id="padS" type="range" min="0.0" max="0.5" step="0.01" value="0.17" class="vslider" />
+                  <div class="vval" id="padSVal">0.17</div>
+                </div>
+                <div class="vcol">
+                  <div class="vlabel">Min clip (s)</div>
+                  <input id="keepS" type="range" min="0.25" max="5.0" step="0.05" value="0.75" class="vslider" />
+                  <div class="vval" id="keepSVal">0.75</div>
+                </div>
+              </div>
+              <button id="startTrimBtn" class="btn primary" style="width:100%;margin-top:10px">Start</button>
+            </div>
+
+            <div class="panel" style="display:flex;align-items:center;color:var(--muted);font-size:13px">
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <!-- Bottom status bar -->
+  <div class="statusbar">
+    <div id="status">Idle.</div>
+    <progress id="progress" max="1" value="0"></progress>
+  </div>
+
+  <script src="../node_modules/chart.js/dist/chart.umd.js"></script>
+  <script src="ui.js"></script>
+</body>
+</html>

@@ -36,3 +36,6 @@ Downloads/
 *.webm
 *.png
 *.jpg
+
+# App
+app/node_modules/
