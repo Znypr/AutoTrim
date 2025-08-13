@@ -1,5 +1,12 @@
+from collections import Counter
 import argparse, math, os, re, subprocess, sys, threading
 from typing import List, Tuple
+import json
+import numpy as np
+import math
+from collections import Counter
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
 
 # ---------------- Utility ----------------
 
@@ -115,13 +122,11 @@ def parse_args():
     p.add_argument("--outdir", default="out", help="Output directory")
     p.add_argument("--hist", action="store_true", help="Generate histogram of RMS levels")
     p.add_argument(
-        "--bins",
-        "--bin",
-        dest="bins",
-        type=int,
-        default=2,
-        help="Histogram bin width in dB",
-    )  # ← default
+    "--bins", "--bin", dest="bins",
+    type=float,            # was: int
+    default=1.0,           # any default you like
+    help="Histogram bin width in dB (e.g., 0.5, 1, 2)"
+)
     p.add_argument("--min_db", type=int, default=-60, help="Minimum dB for histogram")        # ← default
     p.add_argument("--max_db", type=int, default=0, help="Maximum dB for histogram")          # ← default
     return p.parse_args()
@@ -289,64 +294,145 @@ def trim_video(input_path: str, noise: str, silence: float, pad: float,
 
 
 # ---------------- Histogram ----------------
+
+def _lavfi_escape_path(p: str) -> str:
+    # Escape characters that break filter args: \ : , '
+    return "'" + p.replace("\\", "\\\\").replace(":", "\\:").replace(",", "\\,").replace("'", r"\'") + "'"
+
+
 def analyze_levels(input_path: str, dur: float) -> List[float]:
+    """
+    Return one RMS dBFS per decoded audio frame (channels averaged).
+    Uses ffprobe over a lavfi graph for reliable per-frame tags.
+    Falls back to overall RMS if per-frame tags aren't available.
+    """
+    # --- Preferred: ffprobe + lavfi(amovie -> astats) ---
+    try:
+        abs_path = os.path.abspath(input_path)
+        esc = _lavfi_escape_path(abs_path)
+        graph = f"amovie={esc},astats=metadata=1:reset=1"
+        cmd = [
+            "ffprobe", "-hide_banner", "-v", "error",
+            "-f", "lavfi", "-i", graph,
+            "-show_frames", "-of", "json"
+        ]
+        out = subprocess.check_output(cmd, text=True, **_popen_hidden_kwargs())
+        data = json.loads(out)
+
+        per_frame_vals: List[float] = []
+        for fr in data.get("frames", []):
+            tags = fr.get("tags", {})
+            # Collect all channel RMS tags in this frame
+            ch_vals = []
+            for k, v in tags.items():
+                # Keys look like "lavfi.astats.0.RMS_level", "...1.RMS_level", etc.
+                if k.endswith(".RMS_level"):
+                    try:
+                        ch_vals.append(float(v))
+                    except ValueError:
+                        pass
+            if ch_vals:
+                # Average channels to a single RMS dBFS per frame
+                per_frame_vals.append(sum(ch_vals) / len(ch_vals))
+
+        if per_frame_vals:
+            return per_frame_vals
+    except Exception:
+        pass  # fall back below
+
+    # --- Fallback: ffmpeg stderr overall RMS (last resort, avoids crash) ---
     def run_fg(fg: str) -> str:
         cmd = [
             "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
-            "-i", input_path,
-            "-map", "0:a:0?",   # ← optional map: don’t error if no audio
-            "-vn", "-sn", "-dn",
+            "-i", input_path, "-map", "0:a:0?", "-vn", "-sn", "-dn",
             "-af", fg, "-f", "null", "-"
         ]
         return run_ffmpeg_progress(cmd, dur, "levels")
 
-    # Ask astats for both per-frame and overall
-    fg = "astats=metadata=1:reset=1:measure_overall=1"
-    txt = run_fg(fg)
+    txt = run_fg("astats=metadata=1:reset=1")
+    m = re.findall(r"Overall(?:\.RMS_level| RMS level dB)(?:=|:)\s*([-+]?\d+(?:\.\d+)?)", txt)
+    if m:
+        ov = float(m[0])
+        return [ov] * 50  # synthetic tiny distribution so plotting still works
 
-    # 1) Prefer per-frame RMS level values (handle both legacy and newer ffmpeg text)
-    vals = [
-        float(x)
-        for x in re.findall(
-            r"RMS(?:_level| level dB)(?:=|:)\s*([-+]?(?:\d+(?:\.\d+)?|inf))",
-            txt,
-        )
-    ]
-    if vals:
-        return vals
-
-    # 2) Fall back to overall RMS (repeat it a bit so the histogram has bars)
-    overall = re.findall(
-        r"Overall(?:\.RMS_level| RMS level dB)(?:=|:)\s*([-+]?(?:\d+(?:\.\d+)?|inf))",
-        txt,
-    )
-    if overall:
-        ov = float(overall[0])
-        return [ov] * 50  # make a small synthetic distribution
-
-    # 3) No audio or nothing measurable
     return []
 
+def plot_histogram(vals, binsize, min_db, max_db, outpath):
 
-def plot_histogram(vals: List[float], binsize: int, min_db: int, max_db: int, outpath: str):
-    vals = [v if math.isfinite(v) else min_db for v in vals]
+
+    vals = [v for v in vals if math.isfinite(v)]
     if not vals:
         print("[hist] No audio levels found, skipping histogram.")
         return
 
-    try:
-        import matplotlib.pyplot as plt  # type: ignore
-    except Exception:
-        print("[hist] matplotlib is required to generate a histogram.")
-        return
+    # round to 0.1 dB, then bin to requested width
+    tenth = [round(v, 1) for v in vals]
+    b = float(binsize)
+    lo, hi = float(min_db), float(max_db)
 
-    plt.hist(vals, bins=range(min_db, max_db + binsize, binsize), edgecolor="black")
-    plt.xlabel("RMS Level (dBFS)")
-    plt.ylabel("Frame Count")
-    plt.title("Audio Loudness Distribution")
+    def bin_start(x):  # align to grid starting at lo
+        return round(lo + math.floor((x - lo) / b) * b, 1)
+
+    from collections import Counter
+    bin_counts = Counter()
+    for x in tenth:
+        if lo <= x <= hi:
+            bin_counts[bin_start(x)] += 1
+
+    # build edges and percent values
+    edges = []
+    e = lo
+    while e <= hi + 1e-9:
+        edges.append(round(e, 1))
+        e += b
+    counts = [bin_counts.get(s, 0) for s in edges[:-1]]
+    total = sum(counts) if sum(counts) > 0 else 1
+    percent = [c / total * 100.0 for c in counts]
+
+    # --- pretty plot ---
+    plt.figure(figsize=(11, 4))  # landscape
+    try:
+        # connected bins, filled area (Matplotlib >= 3.4)
+        plt.stairs(percent, edges, fill=True, linewidth=0.8)
+    except Exception:
+        # fallback: full-width bars so they touch
+        plt.bar(edges[:-1], percent, width=b, align="edge", linewidth=0.4)
+
+    # grid behind data
+    ax = plt.gca()
+    ax.grid(True, axis="y", linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.grid(True, axis="x", linestyle=":", linewidth=0.4, alpha=0.35)
+    ax.set_axisbelow(True)  # ensure grid is behind
+
+    # cleaner frame & ticks
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    ax.yaxis.set_major_formatter(PercentFormatter())
+    # x ticks ~1 dB apart for readability
+    ax.set_xticks(np.arange(math.ceil(lo), math.floor(hi)+1, 1.0))
+    plt.xticks(rotation=90)
+
+    plt.xlabel(f"RMS Level (dBFS) — bin width {b:.1f} dB")
+    plt.ylabel("Percent of frames")
+    plt.title("Audio Loudness Distribution (RMS, per-frame)")
+    plt.tight_layout()
     plt.savefig(outpath)
     plt.close()
     print(f"[hist] Histogram saved to {outpath}")
+
+def print_histogram_table(vals: List[float], min_db: int, max_db: int, top_n: int = 30):
+    rounded = [round(v, 1) for v in vals if math.isfinite(v)]
+    if not rounded:
+        print("[hist] No finite audio levels found.")
+        return
+    counts = Counter(rounded)
+    total = sum(counts.values())
+    rows = sorted(((lvl, cnt, 100.0 * cnt / total) for lvl, cnt in counts.items()
+                   if min_db <= lvl <= max_db),
+                  key=lambda r: (-r[1], r[0]))
+    print("Top levels (dBFS to 0.1) — count & percent:")
+    for lvl, cnt, pct in rows[:top_n]:
+        print(f"{lvl:>6.1f} dB  {cnt:>7d}  {pct:6.2f}%")
 
 # ---------------- Main ----------------
 def main():
