@@ -1,4 +1,4 @@
-import argparse, os, re, subprocess, sys, threading
+import argparse, math, os, re, subprocess, sys, threading
 from typing import List, Tuple
 
 # ---------------- Utility ----------------
@@ -308,7 +308,7 @@ def analyze_levels(input_path: str, dur: float) -> List[float]:
     vals = [
         float(x)
         for x in re.findall(
-            r"RMS(?:_level| level dB)(?:=|:)\s*([-+]?\d+(?:\.\d+)?)",
+            r"RMS(?:_level| level dB)(?:=|:)\s*([-+]?(?:\d+(?:\.\d+)?|inf))",
             txt,
         )
     ]
@@ -317,7 +317,7 @@ def analyze_levels(input_path: str, dur: float) -> List[float]:
 
     # 2) Fall back to overall RMS (repeat it a bit so the histogram has bars)
     overall = re.findall(
-        r"Overall(?:\.RMS_level| RMS level dB)(?:=|:)\s*([-+]?\d+(?:\.\d+)?)",
+        r"Overall(?:\.RMS_level| RMS level dB)(?:=|:)\s*([-+]?(?:\d+(?:\.\d+)?|inf))",
         txt,
     )
     if overall:
@@ -329,6 +329,7 @@ def analyze_levels(input_path: str, dur: float) -> List[float]:
 
 
 def plot_histogram(vals: List[float], binsize: int, min_db: int, max_db: int, outpath: str):
+    vals = [v if math.isfinite(v) else min_db for v in vals]
     if not vals:
         print("[hist] No audio levels found, skipping histogram.")
         return
