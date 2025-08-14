@@ -39,59 +39,83 @@
     <section class="right-grid">
       <!-- Histogram panel -->
       <div class="panel">
-        <div class="card-title">Histogram</div>
+        <div class="hist-header">
+          <div class="card-title">Histogram</div>
+          <button id="applyNoiseBtn" class="icon-btn apply green" title="Apply lower limit to Noise" aria-label="Apply lower limit to Noise">✓</button>
+        </div>
         <div class="chart-wrap"><canvas id="histChart"></canvas></div>
 
-        <!-- range below chart -->
+        <!-- range layout: slider on top, title+values underneath -->
         <div class="h-range">
-          <div class="range-labels">
-            <span>Level range (dBFS)</span>
-            <span id="rangeVals">—</span>
-          </div>
           <div class="range-wrap">
+            <div class="range-base"></div>
             <div id="rangeFill" class="range-fill"></div>
             <input id="minDb" type="range" min="-80" max="-5" step="1" value="-50" />
             <input id="maxDb" type="range" min="-80" max="-5" step="1" value="-5" />
+          </div>
+          <div class="range-row">
+            <div class="range-title">Level range (dBFS)</div>
           </div>
         </div>
       </div>
 
       <!-- Trimming Parameters -->
       <div class="panel param-card">
-        <div class="card-title">Trimming Parameters</div>
-
-        <div class="v-sliders">
-          <div class="vcol">
-            <div class="vval" id="noiseDbVal">-23.0</div>
-            <input id="noiseDb" class="vslider" type="range" min="-35" max="-10" step="0.1" value="-23" />
-            <div class="vlabel">Noise<br><span class="unit">(dBFS)</span></div>
-          </div>
-          <div class="vcol">
-            <div class="vval" id="silenceSVal">0.50</div>
-            <input id="silenceS" class="vslider" type="range" min="0.2" max="2.0" step="0.05" value="0.5" />
-            <div class="vlabel">Silence<br><span class="unit">(s)</span></div>
-          </div>
-          <div class="vcol">
-            <div class="vval" id="padSVal">0.17</div>
-            <input id="padS" class="vslider" type="range" min="0.0" max="0.5" step="0.01" value="0.17" />
-            <div class="vlabel">Pad<br><span class="unit">(s)</span></div>
-          </div>
-          <div class="vcol">
-            <div class="vval" id="keepSVal">0.75</div>
-            <input id="keepS" class="vslider" type="range" min="0.25" max="5.0" step="0.05" value="0.75" />
-            <div class="vlabel">Min clip<br><span class="unit">(s)</span></div>
-          </div>
+        <div class="param-header">
+          <div class="card-title">Trimming Parameters</div>
+          <button id="paramInfoBtn" class="icon-btn small" title="Show info" aria-label="Show info">i</button>
         </div>
 
-        <button id="startTrimBtn" class="btn primary wide">Start</button>
+        <div class="param-front">
+          <div class="v-sliders">
+            <div class="vcol">
+              <div class="vval" id="noiseDbVal">-23.0</div>
+              <input id="noiseDb" class="vslider" type="range" min="-35" max="-10" step="0.1" value="-23" />
+              <div class="vlabel">Noise<br><span class="unit">(dBFS)</span></div>
+            </div>
+            <div class="vcol">
+              <div class="vval" id="silenceSVal">0.50</div>
+              <input id="silenceS" class="vslider" type="range" min="0.2" max="2.0" step="0.05" value="0.5" />
+              <div class="vlabel">Silence<br><span class="unit">(s)</span></div>
+            </div>
+            <div class="vcol">
+              <div class="vval" id="padSVal">0.17</div>
+              <input id="padS" class="vslider" type="range" min="0.0" max="0.5" step="0.01" value="0.17" />
+              <div class="vlabel">Pad<br><span class="unit">(s)</span></div>
+            </div>
+            <div class="vcol">
+              <div class="vval" id="keepSVal">0.75</div>
+              <input id="keepS" class="vslider" type="range" min="0.25" max="5.0" step="0.05" value="0.75" />
+              <div class="vlabel">Min clip<br><span class="unit">(s)</span></div>
+            </div>
+          </div>
+
+          <button id="startTrimBtn" class="btn primary wide">Start</button>
+        </div>
+
+        <div class="param-back">
+          <ul class="legend">
+            <li><b>Noise (dBFS)</b>: Threshold below which audio is treated as silence. Lower = keep more; higher = cut more.</li>
+            <li><b>Silence (s)</b>: Minimum continuous silence duration to be removed.</li>
+            <li><b>Pad (s)</b>: Extra seconds kept before and after speaking segments.</li>
+            <li><b>Min clip (s)</b>: Minimum length of kept segments; shorter ones may be merged or removed.</li>
+          </ul>
+        </div>
       </div>
     </section>
   </div>
 
   <!-- Bottom status bar -->
   <div class="statusbar">
-    <div id="status">Idle.</div>
-    <progress id="progress" max="1" value="0"></progress>
+    <div class="status-left">
+      <div id="status">Idle.</div>
+      <progress id="progress" max="1" value="0"></progress>
+    </div>
+    <div class="status-right">
+      <div id="ioSummary" class="file-meta"></div>
+      <button id="inputDirBtn" class="icon-btn" title="Set default input folder" aria-label="Set default input folder">↓</button>
+      <button id="outputDirBtn" class="icon-btn" title="Set default output folder" aria-label="Set default output folder">↑</button>
+    </div>
   </div>
 
   <script src="../node_modules/chart.js/dist/chart.umd.js"></script>

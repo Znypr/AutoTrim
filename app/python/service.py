@@ -1,8 +1,9 @@
 #python/service.py
 
-import sys, json, os, tempfile, traceback
+import sys, json, os, tempfile, traceback, subprocess, base64
 import trim
 import threading, time, uuid, re
+import subprocess
 
 JOBS = {}  # job_id -> {"cancel": threading.Event(), "thread": Thread}
 
@@ -107,8 +108,17 @@ def cmd_trim(payload):
     pad     = float(payload.get("pad", 0.15))
     keep    = float(payload.get("keep", 0.75))
 
-    out = os.path.join(os.path.expanduser("~"), "Downloads",
-                       f"{os.path.splitext(os.path.basename(path))[0]}_trimmed.mp4")
+    # Optional custom output path (from UI). If not provided, default to Downloads
+    out = payload.get("out")
+    if out:
+        try:
+            out_dir = os.path.dirname(out) or "."
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            pass
+    else:
+        out = os.path.join(os.path.expanduser("~"), "Downloads",
+                           f"{os.path.splitext(os.path.basename(path))[0]}_trimmed.mp4")
 
     job_id    = _new_job_id()
     cancel_ev = threading.Event()
@@ -119,15 +129,32 @@ def cmd_trim(payload):
             trim.CANCEL = cancel_ev
 
             dur = trim.ffprobe_duration(path)
+
+            # Probe whether the input has an audio stream
+            def input_has_audio(p):
+                try:
+                    out = subprocess.check_output([
+                        "ffprobe","-v","error","-select_streams","a:0",
+                        "-show_entries","stream=index","-of","csv=p=0", p
+                    ], text=True)
+                    return bool(out.strip())
+                except Exception:
+                    return True  # assume yes if probing fails
+            has_audio = input_has_audio(path)
             def on_detect(fr): send("progress", stage="detect", value=fr)
 
             # detect silences
-            txt = trim.run_ffmpeg_progress(
+            # nudge UI immediately
+            send("progress", stage="detect", value=0.01)
+            rc, txt = trim.run_ffmpeg_progress(
                 ["ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y","-i", path,
                  "-af", f"silencedetect=noise={trim._noise_for_ffmpeg(f'{noise}dB')}:d={silence}",
                  "-f","null","-"],
                 dur, "detect", on_progress=on_detect
             )
+            if rc != 0:
+                send("job", id=job_id, status="error", error="ffmpeg detect failed")
+                return
             starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+(?:\.\d+)?)", txt)]
             ends   = [float(x) for x in re.findall(r"silence_end:\s*(\d+(?:\.\d+)?)",   txt)]
             segs = trim.build_speaking_segments(starts, ends, dur, pad, keep)
@@ -137,24 +164,52 @@ def cmd_trim(payload):
 
             # concat filter
             eps = 0.010
-            clips = [(max(0.0, s), max(0.0, e - eps)) for s, e in segs if e - s > eps]
+            clips = [(max(0.0, s), max(s + eps, e - eps)) for s, e in segs if e - s > eps]
             vf, af = [], []
             for i, (st, et) in enumerate(clips):
                 vf.append(f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{i}]")
-                af.append(f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
-            concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
-            fc = ";".join(vf + af + [f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"])
-            total = sum(et - st for st, et in clips)
+                if has_audio:
+                    af.append(f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
+            if has_audio:
+                concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
+                fc = ";".join(vf + af + [f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"])
+            else:
+                concat_inputs = "".join(f"[v{i}]" for i in range(len(clips)))
+                fc = ";".join(vf + [f"{concat_inputs}concat=n={len(clips)}:v=1:a=0[v]"])
+            total = max(0.001, sum(et - st for st, et in clips))
 
             def on_render(fr): send("progress", stage="render", value=fr)
 
-            trim.run_ffmpeg_progress(
-                ["ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y","-i", path,
-                 "-filter_complex", fc, "-map","[v]","-map","[a]",
-                 "-c:v","libx264","-preset","veryfast","-crf","20",
-                 "-c:a","aac","-b:a","160k","-movflags","+faststart", out],
-                total, "render", on_progress=on_render
-            )
+            send("progress", stage="render", value=0.01)
+            # Re-encode output (required when using filter_complex). Write to temp then move.
+            tmp_out = out + ".partial.mp4"
+            try:
+                if os.path.exists(tmp_out):
+                    os.remove(tmp_out)
+            except Exception:
+                pass
+            cmd = [
+                "ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y","-i", path,
+                "-filter_complex", fc,
+                "-map","[v]",
+            ]
+            if has_audio:
+                cmd += ["-map","[a]"]
+            cmd += ["-c:v","libx264","-preset","veryfast","-crf","20"]
+            if has_audio:
+                cmd += ["-c:a","aac","-b:a","160k"]
+            cmd += ["-movflags","+faststart", tmp_out]
+            rc, _ = trim.run_ffmpeg_progress(cmd, total, "render", on_progress=on_render)
+            if rc != 0:
+                send("job", id=job_id, status="error", error="ffmpeg render failed")
+                return
+            try:
+                if os.path.exists(out):
+                    os.remove(out)
+                os.replace(tmp_out, out)
+            except Exception as e:
+                send("job", id=job_id, status="error", error=f"finalize failed: {e}")
+                return
 
             send("job", id=job_id, status="finished", ok=True, output=out)
 
@@ -177,6 +232,20 @@ def cmd_trim(payload):
     send("job", id=job_id, status="started", kind="trim")
     return {"ok": True, "job": job_id}
 
+def cmd_thumb(payload):
+    path = payload["path"]
+    try:
+        # single JPEG frame from start
+        img = subprocess.check_output([
+            "ffmpeg","-hide_banner","-nostats","-y",
+            "-ss","0","-i", path,
+            "-frames:v","1","-f","mjpeg","pipe:1"
+        ], stderr=subprocess.DEVNULL)
+        b64 = base64.b64encode(img).decode("ascii")
+        return {"ok": True, "dataUrl": f"data:image/jpeg;base64,{b64}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def cmd_cancel(payload):
     job = payload.get("job")
     j = JOBS.get(job)
@@ -194,6 +263,15 @@ def main():
             cmd = req.get("cmd")
             if cmd == "analyze":
                 res = cmd_analyze(req)
+            elif cmd == "probe":
+                try:
+                    p = req.get("path")
+                    d = trim.ffprobe_duration(p)
+                    res = {"ok": True, "duration": d}
+                except Exception as e:
+                    res = {"ok": False, "error": str(e)}
+            elif cmd == "thumb":
+                res = cmd_thumb(req)
             elif cmd == "trim":
                 res = cmd_trim(req)
             elif cmd == "cancel":

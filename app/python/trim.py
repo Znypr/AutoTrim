@@ -71,20 +71,39 @@ def run_ffmpeg_progress(cmd, total, desc, on_progress=None, on_rms=None):
     stderr_buf = []
 
     rms_re = re.compile(r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)")
-    def _drain_stderr():
-        if not proc.stderr:
-            return
-        for line in proc.stderr:
+
+    lock = threading.Lock()
+
+    def _handle_line(line: str, from_stderr: bool):
+        if from_stderr:
             stderr_buf.append(line)
-            if on_rms:
-                m = rms_re.search(line)
-                if m:
-                    try:
-                        on_rms(float(m.group(1)))
-                    except Exception:
-                        pass
-    t = threading.Thread(target=_drain_stderr, daemon=True)
-    t.start()
+        if on_rms and from_stderr:
+            m = rms_re.search(line)
+            if m:
+                try:
+                    on_rms(float(m.group(1)))
+                except Exception:
+                    pass
+        if on_progress and line.startswith(("out_time_ms=","out_time_us=","out_time=")):
+            val = line.split("=", 1)[1]
+            tval = _parse_out_time(val)
+            if tval is not None and total > 0:
+                frac = max(0.0, min(1.0, tval / total))
+                try:
+                    on_progress(frac)
+                except Exception:
+                    pass
+
+    def _reader(stream, from_stderr: bool):
+        if not stream:
+            return
+        for line in stream:
+            with lock:
+                _handle_line(line, from_stderr)
+
+    t_out = threading.Thread(target=_reader, args=(proc.stdout, False), daemon=True)
+    t_err = threading.Thread(target=_reader, args=(proc.stderr, True), daemon=True)
+    t_out.start(); t_err.start()
 
     def _parse_out_time(val: str):
         val = val.strip()
@@ -110,30 +129,31 @@ def run_ffmpeg_progress(cmd, total, desc, on_progress=None, on_rms=None):
                 except Exception: pass
                 break
 
-            if proc.stdout is None:
+            if proc.poll() is not None:
                 break
-            line = proc.stdout.readline()
-            if line == "" and proc.poll() is not None:
-                break
-            if not line:
-                continue
-
-            if line.startswith(("out_time_ms=","out_time_us=","out_time=")):
-                tval = _parse_out_time(line.split("=", 1)[1])
-                if tval is not None and total > 0 and on_progress:
-                    frac = max(0.0, min(1.0, tval / total))
-                    try: on_progress(frac)
-                    except: pass
+            # main thread idles while background readers stream lines
+            proc.wait(timeout=0.05)
     finally:
         rc = proc.wait()
-        try: t.join(timeout=0.2)
+        try:
+            t_out.join(timeout=0.2)
+            t_err.join(timeout=0.2)
         except: pass
         if on_progress and rc == 0:
             try: on_progress(1.0)
             except: pass
+        # Ensure all pipes are closed so OS releases file handles
+        try:
+            if proc.stdout: proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            if proc.stderr: proc.stderr.close()
+        except Exception:
+            pass
 
-    # IMPORTANT: give detect() the silencedetect output back
-    return "".join(stderr_buf)
+    # Return process result and collected stderr
+    return rc, "".join(stderr_buf)
 
 
 def run_ffmpeg_with_progress(cmd:list[str], total_dur_sec:float, on_progress=None) -> int:

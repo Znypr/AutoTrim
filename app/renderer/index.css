@@ -77,7 +77,7 @@ body {
   display: grid;
   grid-template-columns: var(--leftW) 1fr;
   gap: var(--gap);
-  padding: 16px 16px 56px;
+  padding: 12px; /* minimal padding around cards; status bar excluded */
   /* leave space for statusbar */
   max-width: 1260px;
   margin: 0 auto;
@@ -128,9 +128,12 @@ body {
 }
 
 .file-meta {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
+
+/* Center video stats text inside the left thumbnail panel */
+.thumb-card .file-meta { text-align: center; }
 
 .import-progress {
   height: 8px;
@@ -165,19 +168,34 @@ body {
   margin-bottom: 8px;
 }
 
-/* Histogram chart */
-.chart-wrap {
-  height: 200px;
+.hist-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.icon-btn.apply.green {
+  color: #000;
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 4px 6px;
+  font-weight: 800;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
+.icon-btn.apply.green:hover { filter: brightness(1.05); }
+
+/* Histogram chart */
+.chart-wrap { height: 200px; }
 
 /* Range below chart */
-.h-range .range-labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--muted);
-  margin: 8px 0 6px;
+.h-range {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 6px;
+  margin-top: 12px;   /* more distance from histogram to slider */
+  margin-bottom: 0;   /* tighter spacing under title+values */
 }
+.h-range .range-row { display: flex; align-items: center; justify-content: center; }
+.h-range .range-title { font-size: 12px; color: var(--muted); text-align: center; }
 
 .range-wrap {
   position: relative;
@@ -220,10 +238,21 @@ body {
 .range-fill {
   position: absolute;
   height: 6px;
-  background: #222;
+  background: rgba(29,185,84,.18); /* match histogram area fill */
   border-radius: 999px;
   left: 0;
   width: 0;
+  pointer-events: none;
+}
+
+/* Non-interactive base track behind the double slider */
+.range-base {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.08);
   pointer-events: none;
 }
 
@@ -234,7 +263,39 @@ body {
   flex-direction: column;
   justify-content: space-between;
   background: var(--card);
+  gap: 15px;
 }
+
+.param-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.param-header .card-title { margin-bottom: 0; }
+
+.icon-btn.small { font-size: 13px; padding: 2px 6px; }
+
+.param-card { position: relative; }
+.param-front, .param-back { backface-visibility: hidden; transition: transform .35s ease, opacity .2s ease; }
+.param-front { display: flex; flex-direction: column; flex: 1 1 auto; }
+.param-back {
+  display: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.param-card.show-info .param-front { display: none; }
+.param-card.show-info .param-back { display: block; }
+
+.legend {
+  margin: 15px 0 0; /* roughly aligns where sliders begin under header */
+  padding-left: 18px;
+}
+.legend li { margin: 6px 0; }
+
+/* Keep Start button pinned to bottom; pull sliders up under header */
+#startTrimBtn { margin-top: auto; }
 
 .v-sliders {
   display: flex;
@@ -300,16 +361,21 @@ body {
   height: 35px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
   padding: 0 12px;
   background: var(--bg);
   border-top: 1px solid #000;
 }
 
+.status-left { display: flex; align-items: center; gap: 12px; }
+.status-right { display: flex; align-items: center; gap: 8px; padding-left: 4px; }
+.status-right .io-label { font-weight: 700; color: var(--txt); }
+.status-right .sep { color: var(--muted); }
+
 .statusbar progress {
   -webkit-appearance: none; 
   appearance: none;
-  width: 320px;
+  width: 256px; /* 20% shorter than 320px */
   height: 10px;
   border: none;
   border-radius: 999px;
@@ -330,3 +396,14 @@ body {
   background-color: var(--accent);
   background-image: none;
 }
+
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+.icon-btn:hover { color: var(--txt); }
