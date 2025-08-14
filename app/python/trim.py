@@ -1,5 +1,5 @@
 # python/trim.py
-import argparse, os, re, subprocess, sys, threading, time, math, queue
+import argparse, os, re, subprocess, sys, threading, time, math
 from typing import List, Tuple
 from collections import Counter
 
@@ -9,7 +9,6 @@ from matplotlib.ticker import PercentFormatter
 
 # ---- Globals -----------------------------------------------------------------
 
-DEBUG_FFMPEG = False
 CANCEL = threading.Event()
 
 # Matches "time=HH:MM:SS.xx" seen on stderr when -progress isn't present

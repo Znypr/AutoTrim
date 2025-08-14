@@ -1,9 +1,8 @@
 #python/service.py
 
-import sys, json, os, tempfile, traceback, subprocess, base64
+import sys, json, os, traceback, subprocess, base64
 import trim
 import threading, time, uuid, re
-import subprocess
 
 JOBS = {}  # job_id -> {"cancel": threading.Event(), "thread": Thread}
 
@@ -14,19 +13,6 @@ def _has_nvenc():
         return "h264_nvenc" in out
     except Exception:
         return False
-
-
-def _event(payload:dict):
-    # newline-delimited JSON event for the renderer
-    payload.setdefault('ts', time.time())
-    sys.stdout.write(json.dumps(payload) + "\n")
-    sys.stdout.flush()
-
-def _reply(payload:dict):
-    # newline-delimited JSON reply for main.js queue (no "event" key)
-    sys.stdout.write(json.dumps(payload) + "\n")
-    sys.stdout.flush()
-
 def _new_job_id():
     return uuid.uuid4().hex[:8]
 
@@ -186,8 +172,6 @@ def cmd_trim(payload):
             send("progress", stage="detect", value=0.01)
             
             # Add timeout for detect stage to prevent hanging
-            import threading
-            import time
             
             detect_result = {"rc": None, "txt": "", "error": None}
             detect_complete = threading.Event()
@@ -196,7 +180,7 @@ def cmd_trim(payload):
             
             def detect_worker():
                 try:
-                    sys.stderr.write(f"[svc] detect worker starting...\n"); sys.stderr.flush()
+                    sys.stderr.write("[svc] detect worker starting...\n"); sys.stderr.flush()
                     
                     def on_detect_progress(frac):
                         try:
@@ -216,7 +200,6 @@ def cmd_trim(payload):
                     progress_sent = False
                     last_output_time = time.time()
                     output_received = False
-                    ffmpeg_completed = False
                     
                     def simulate_progress():
                         nonlocal progress_sent
@@ -250,7 +233,7 @@ def cmd_trim(payload):
                         time.sleep(0.1)
                         if detect_result.get("rc") == 0:
                             try:
-                                sys.stderr.write(f"[svc] FFmpeg completed successfully, sending final progress\n"); sys.stderr.flush()
+                                sys.stderr.write("[svc] FFmpeg completed successfully, sending final progress\n"); sys.stderr.flush()
                                 on_detect(1.0)
                             except Exception as e:
                                 sys.stderr.write(f"[svc] final progress from simulation error: {str(e)}\n"); sys.stderr.flush()
@@ -279,7 +262,6 @@ def cmd_trim(payload):
                     
                     # Add FFmpeg process monitoring to detect if it's actually stuck
                     def ffmpeg_monitor():
-                        nonlocal last_output_time, output_received
                         while not detect_complete.is_set():
                             time.sleep(10.0)  # Check every 10 seconds (less aggressive)
                             if not detect_complete.is_set():
@@ -356,8 +338,6 @@ def cmd_trim(payload):
                     # Run FFmpeg and capture output
                     rc, txt = trim.run_ffmpeg_progress(detect_cmd, dur, "detect", on_progress=on_detect_progress_with_output)
                     
-                    # Mark FFmpeg as completed
-                    ffmpeg_completed = True
                     
                     # Send final progress update to show completion
                     try:
@@ -376,7 +356,7 @@ def cmd_trim(payload):
                     # Double-check that final progress was sent
                     if detect_result.get("rc") == 0:
                         try:
-                            sys.stderr.write(f"[svc] ensuring final progress is sent\n"); sys.stderr.flush()
+                            sys.stderr.write("[svc] ensuring final progress is sent\n"); sys.stderr.flush()
                             on_detect(1.0)
                         except Exception as e:
                             sys.stderr.write(f"[svc] fallback final progress error: {str(e)}\n"); sys.stderr.flush()
@@ -426,7 +406,7 @@ def cmd_trim(payload):
                 sys.stderr.write(f"[svc] all matches found: {re.findall(silence_end_pattern, txt)}\n"); sys.stderr.flush()
                 
                 if not starts or not ends:
-                    sys.stderr.write(f"[svc] no silence detected, using full video\n"); sys.stderr.flush()
+                    sys.stderr.write("[svc] no silence detected, using full video\n"); sys.stderr.flush()
                     # If no silence detected, use the full video
                     starts = [0.0]
                     ends = [dur]
@@ -438,7 +418,7 @@ def cmd_trim(payload):
                 
             # Ensure we have valid segments even if no silence was detected
             if not starts or not ends:
-                sys.stderr.write(f"[svc] fallback: using full video as single segment\n"); sys.stderr.flush()
+                sys.stderr.write("[svc] fallback: using full video as single segment\n"); sys.stderr.flush()
                 starts = [0.0]
                 ends = [dur]
             
@@ -448,7 +428,7 @@ def cmd_trim(payload):
             
             # If no segments were built, create a fallback segment for the full video
             if not segs:
-                sys.stderr.write(f"[svc] no segments built, creating fallback full video segment\n"); sys.stderr.flush()
+                sys.stderr.write("[svc] no segments built, creating fallback full video segment\n"); sys.stderr.flush()
                 # Create a single segment for the full video
                 # The segment must be at least 'keep' seconds long
                 if dur >= keep:
@@ -517,7 +497,7 @@ def cmd_trim(payload):
                     else:
                         render_progress_stalled = False
                 # Exit when render completes
-                sys.stderr.write(f"[svc] render progress monitor exiting\n"); sys.stderr.flush()
+                sys.stderr.write("[svc] render progress monitor exiting\n"); sys.stderr.flush()
             
             # Start render progress monitor thread
             render_monitor_thread = threading.Thread(target=render_progress_monitor, daemon=True)
@@ -595,7 +575,7 @@ def cmd_trim(payload):
             
             def render_worker():
                 try:
-                    sys.stderr.write(f"[svc] render worker starting...\n"); sys.stderr.flush()
+                    sys.stderr.write("[svc] render worker starting...\n"); sys.stderr.flush()
                     rc, stderr_txt = trim.run_ffmpeg_progress(cmd, total if len(clips)>1 else dur_cut, "render", on_progress=on_render)
                     render_result["rc"] = rc
                     render_result["stderr_txt"] = stderr_txt
@@ -611,13 +591,13 @@ def cmd_trim(payload):
             
             # Wait for render to complete with 10 minute timeout
             if not render_complete.wait(timeout=600):
-                sys.stderr.write(f"[svc] render timeout after 600s\n"); sys.stderr.flush()
+                sys.stderr.write("[svc] render timeout after 600s\n"); sys.stderr.flush()
                 send("job", id=job_id, status="error", error="Render stage timed out after 10 minutes")
                 return
             
             # Ensure we got a result
             if render_result["rc"] is None and render_result["error"] is None:
-                sys.stderr.write(f"[svc] render completed but no result\n"); sys.stderr.flush()
+                sys.stderr.write("[svc] render completed but no result\n"); sys.stderr.flush()
                 send("job", id=job_id, status="error", error="Render stage completed but no result")
                 return
             
@@ -648,40 +628,26 @@ def cmd_trim(payload):
         except Exception as e:
             send("job", id=job_id, status="error", error=str(e))
         finally:
-            # Clean up monitor threads
-            try:
-                if 'render_monitor_thread' in locals():
-                    render_monitor_thread.join(timeout=1.0)
-            except Exception:
-                pass
-            try:
-                if 'monitor_thread' in locals():
-                    monitor_thread.join(timeout=1.0)
-            except Exception:
-                pass
-            try:
-                if 'progress_thread' in locals():
-                    progress_thread.join(timeout=1.0)
-            except Exception:
-                pass
-            try:
-                if 'ffmpeg_monitor_thread' in locals():
-                    ffmpeg_monitor_thread.join(timeout=1.0)
-            except Exception:
-                pass
-            try:
-                if 'render_thread' in locals():
-                    render_thread.join(timeout=1.0)
-            except Exception:
-                pass
-            try:
-                if 'heartbeat_thread' in locals():
-                    heartbeat_thread.join(timeout=1.0)
-            except Exception:
-                pass
+            locals_snapshot = locals()
+            for name in (
+                'render_monitor_thread',
+                'monitor_thread',
+                'progress_thread',
+                'ffmpeg_monitor_thread',
+                'render_thread',
+                'heartbeat_thread',
+            ):
+                t = locals_snapshot.get(name)
+                if t:
+                    try:
+                        t.join(timeout=1.0)
+                    except Exception:
+                        pass
             JOBS.pop(job_id, None)
-            try: cancel_ev.clear()
-            except: pass
+            try:
+                cancel_ev.clear()
+            except Exception:
+                pass
 
     t = threading.Thread(target=worker, daemon=True)
     JOBS[job_id] = {"cancel": cancel_ev, "thread": t}

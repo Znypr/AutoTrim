@@ -6,7 +6,6 @@ This simulates the progress monitoring without requiring actual video files.
 
 import time
 import threading
-import sys
 
 def test_progress_stall_detection():
     """Test the progress stall detection mechanism"""
