@@ -1,3 +1,5 @@
+/* index.css */
+
 :root {
   --bg: #121212;
   --card: #161616;
@@ -11,6 +13,8 @@
   --panelH: 300px;
   --gap: 16px;
 }
+
+.front { z-index: 3 !important; } /* raised on demand */
 
 html,
 body {

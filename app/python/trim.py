@@ -17,6 +17,13 @@ CANCEL = threading.Event()
 
 # ---------------- Utility ----------------
 
+def _positive_float(x: str) -> float:
+    f = float(x)
+    if not math.isfinite(f) or f <= 0.0:
+        raise argparse.ArgumentTypeError("--bins must be a positive, finite number")
+    return f
+
+
 def _popen_hidden_kwargs():
     # Hide console windows on Windows when running as a GUI app
     if os.name == "nt" and (getattr(sys, "frozen", False) or getattr(sys, "stderr", None) is None):
@@ -44,88 +51,90 @@ _patch_ffmpeg_path()
 def _hhmmss_to_seconds(h, m, s, cs):
     return int(h)*3600 + int(m)*60 + int(s) + int(cs)/100.0
 
-def run_ffmpeg_progress(cmd: List[str], total: float, desc: str, on_progress=None) -> str:
-    """Run ffmpeg and stream progress. Cancellation via trim.CANCEL."""
+def run_ffmpeg_progress(cmd, total, desc, on_progress=None, on_rms=None):
+    """
+    Run ffmpeg with -progress pipe:1 and stream real-time progress updates.
+
+    - Main thread reads ONLY stdout (progress key=value lines).
+    - Stderr is drained in a background thread to avoid blocking the pipe.
+    - We COLLECT stderr into a buffer and RETURN it (needed for silencedetect).
+    """
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1, **_popen_hidden_kwargs()
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        **_popen_hidden_kwargs()
     )
 
-    err_lines: List[str] = []
+    stderr_buf = []
 
-    def _stderr_reader():
+    rms_re = re.compile(r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)")
+    def _drain_stderr():
+        if not proc.stderr:
+            return
         for line in proc.stderr:
-            err_lines.append(line)
+            stderr_buf.append(line)
+            if on_rms:
+                m = rms_re.search(line)
+                if m:
+                    try:
+                        on_rms(float(m.group(1)))
+                    except Exception:
+                        pass
+    t = threading.Thread(target=_drain_stderr, daemon=True)
+    t.start()
 
-    threading.Thread(target=_stderr_reader, daemon=True).start()
-
-    err_stream = sys.stderr if getattr(sys, "stderr", None) else None
-    if err_stream:
-        print(f"{desc}:", file=err_stream)
-
-    def _parse_hms(s: str):
-        s = s.strip()
-        if s == "N/A":
+    def _parse_out_time(val: str):
+        val = val.strip()
+        if val == "N/A":
             return None
-        hh, mm, ss = s.split(":")
-        return int(hh) * 3600 + int(mm) * 60 + float(ss)
+        try:
+            return float(val) / 1_000_000.0  # out_time_{ms,us}
+        except ValueError:
+            try:
+                hh, mm, ss = val.split(":")
+                return int(hh) * 3600 + int(mm) * 60 + float(ss)
+            except Exception:
+                return None
 
-    bar_len = 40
     try:
+        if on_progress:
+            try: on_progress(0.0)
+            except: pass
+
         while True:
-            # early cancel
             if CANCEL.is_set():
                 try: proc.terminate()
                 except Exception: pass
-                proc.wait(timeout=3)
-                raise RuntimeError("CANCELLED")
+                break
 
+            if proc.stdout is None:
+                break
             line = proc.stdout.readline()
             if line == "" and proc.poll() is not None:
                 break
-
-            out_time = None
-            if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
-                val = line.split("=", 1)[1].strip()
-                if val != "N/A":
-                    out_time = float(val) / 1_000_000.0
-            elif line.startswith("out_time="):
-                sec = _parse_hms(line.split("=", 1)[1])
-                if sec is not None:
-                    out_time = sec
-
-            if out_time is None:
+            if not line:
                 continue
 
-            frac = 0.0
-            if total and total > 0:
-                frac = min(max(out_time / total, 0.0), 1.0)
-
-            if err_stream:
-                filled = int(bar_len * frac)
-                bar = "#" * filled + "-" * (bar_len - filled)
-                err_stream.write(f"\r[{bar}] {frac*100:5.1f}%")
-                err_stream.flush()
-
-            if on_progress:
-                try: on_progress(frac)
-                except Exception: pass
-
-            if CANCEL.is_set():
-                try: proc.terminate()
-                except Exception: pass
-                proc.wait(timeout=3)
-                raise RuntimeError("CANCELLED")
-
+            if line.startswith(("out_time_ms=","out_time_us=","out_time=")):
+                tval = _parse_out_time(line.split("=", 1)[1])
+                if tval is not None and total > 0 and on_progress:
+                    frac = max(0.0, min(1.0, tval / total))
+                    try: on_progress(frac)
+                    except: pass
     finally:
-        if err_stream:
-            err_stream.write("\n")
-            err_stream.flush()
+        rc = proc.wait()
+        try: t.join(timeout=0.2)
+        except: pass
+        if on_progress and rc == 0:
+            try: on_progress(1.0)
+            except: pass
 
-    proc.wait()
-    if proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
-    return "".join(err_lines)
+    # IMPORTANT: give detect() the silencedetect output back
+    return "".join(stderr_buf)
+
 
 def run_ffmpeg_with_progress(cmd:list[str], total_dur_sec:float, on_progress=None) -> int:
     """
@@ -154,12 +163,10 @@ def parse_args():
     p.add_argument("--keep", type=float, default=0.25, help="Drop kept clips shorter than this (sec)")  # ← default
     p.add_argument("--outdir", default="out", help="Output directory")
     p.add_argument("--hist", action="store_true", help="Generate histogram of RMS levels")
-    p.add_argument(
-    "--bins", "--bin", dest="bins",
-    type=float,            # was: int
-    default=1.0,           # any default you like
-    help="Histogram bin width in dB (e.g., 0.5, 1, 2)"
-)
+    p.add_argument("--bins", "--bin", dest="bins",
+                type=_positive_float, default=1.0,
+                help="Histogram bin width in dB (e.g., 0.5, 1, 2)")
+
     p.add_argument("--min_db", type=int, default=-60, help="Minimum dB for histogram")        # ← default
     p.add_argument("--max_db", type=int, default=0, help="Maximum dB for histogram")          # ← default
     return p.parse_args()
@@ -314,63 +321,96 @@ def _lavfi_escape_path(p: str) -> str:
     # Escape characters that break filter args: \ : , '
     return "'" + p.replace("\\", "\\\\").replace(":", "\\:").replace(",", "\\,").replace("'", r"\'") + "'"
 
-
 def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]:
     """
-    Return one RMS dBFS per decoded audio frame (channels averaged).
-    Uses ffprobe over a lavfi graph for reliable per-frame tags.
-    Falls back to overall RMS if per-frame tags aren't available.
+    Collect per-frame RMS dBFS while streaming progress. Parses stderr in a
+    separate thread to avoid deadlocks and missing lines.
     """
-    # --- Preferred: ffprobe + lavfi(amovie -> astats) ---
+    vals: List[float] = []
+    lock = threading.Lock()
+
+    # Print per-frame RMS. We accept both channel-indexed and Overall keys.
+  
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostats",
+        "-progress", "pipe:1",
+        "-y", "-i", input_path,
+       "-map", "0:a?", "-vn", "-sn", "-dn",
+       "-af", "pan=mono|c0=0.5*c0+0.5*c1,astats=metadata=1:reset=1,ametadata=print:mode=print",
+
+        "-f", "null", "-"
+    ]
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1, **_popen_hidden_kwargs())
+
+    # robust patterns: channel-specific and "Overall"
+    rms_pat = re.compile(
+        r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)"
+    )
+
+    def _stderr_reader():
+        # consume stderr continuously so its pipe never blocks
+        for line in proc.stderr:
+            m = rms_pat.search(line)
+            if m:
+                try:
+                    v = float(m.group(1))
+                    with lock:
+                        vals.append(v)
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=_stderr_reader, daemon=True)
+    t.start()
+
+    def _parse_hms(s: str):
+        s = s.strip()
+        if s == "N/A":
+            return None
+        hh, mm, ss = s.split(":")
+        return int(hh) * 3600 + int(mm) * 60 + float(ss)
+
+    # read progress from stdout
     try:
-        abs_path = os.path.abspath(input_path)
-        esc = _lavfi_escape_path(abs_path)
-        graph = f"amovie={esc},astats=metadata=1:reset=1"
-        cmd = [
-            "ffprobe", "-hide_banner", "-v", "error",
-            "-f", "lavfi", "-i", graph,
-            "-show_frames", "-of", "json"
-        ]
-        out = subprocess.check_output(cmd, text=True, **_popen_hidden_kwargs())
-        data = json.loads(out)
+        while True:
+            if CANCEL.is_set():
+                try: proc.terminate()
+                except Exception: pass
+                raise RuntimeError("CANCELLED")
 
-        per_frame_vals: List[float] = []
-        for fr in data.get("frames", []):
-            tags = fr.get("tags", {})
-            # Collect all channel RMS tags in this frame
-            ch_vals = []
-            for k, v in tags.items():
-                # Keys look like "lavfi.astats.0.RMS_level", "...1.RMS_level", etc.
-                if k.endswith(".RMS_level"):
-                    try:
-                        ch_vals.append(float(v))
-                    except ValueError:
-                        pass
-            if ch_vals:
-                # Average channels to a single RMS dBFS per frame
-                per_frame_vals.append(sum(ch_vals) / len(ch_vals))
+            line = proc.stdout.readline()
+            if line == "" and proc.poll() is not None:
+                break
 
-        if per_frame_vals:
-            return per_frame_vals
-    except Exception:
-        pass  # fall back below
+            out_time = None
+            if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
+                val = line.split("=", 1)[1].strip()
+                if val != "N/A":
+                    # out_time_ms or out_time_us (both microseconds)
+                    out_time = float(val) / 1_000_000.0
+            elif line.startswith("out_time="):
+                sec = _parse_hms(line.split("=", 1)[1])
+                if sec is not None:
+                    out_time = sec
 
-    # --- Fallback: ffmpeg stderr overall RMS (last resort, avoids crash) ---
-    def run_fg(fg: str) -> str:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
-            "-i", input_path, "-map", "0:a:0?", "-vn", "-sn", "-dn",
-            "-af", fg, "-f", "null", "-"
-        ]
-        return run_ffmpeg_progress(cmd, dur, "levels")
+            if out_time is not None and on_progress and dur > 0:
+                fr = max(0.0, min(1.0, out_time / dur))
+                try: on_progress(fr)
+                except Exception: pass
+    finally:
+        proc.wait()
+        try: t.join(timeout=0.2)
+        except Exception: pass
 
-    txt = run_fg("astats=metadata=1:reset=1")
-    m = re.findall(r"Overall(?:\.RMS_level| RMS level dB)(?:=|:)\s*([-+]?\d+(?:\.\d+)?)", txt)
-    if m:
-        ov = float(m[0])
-        return [ov] * 50  # synthetic tiny distribution so plotting still works
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
-    return []
+    return vals
+
+
+
 
 def plot_histogram(vals, binsize, min_db, max_db, outpath):
 

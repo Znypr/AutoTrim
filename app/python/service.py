@@ -27,21 +27,45 @@ def send(evt, **data):
 def cmd_analyze(payload):
     import collections, math
     path   = payload["path"]
-    min_db = float(payload.get("min_db", -60))
-    max_db = float(payload.get("max_db", 0))
-    bins   = float(payload.get("bins", 0.1))  # ADD THIS LINE
+
+    # --- sanitize inputs ---
+    try:
+        min_db = float(payload.get("min_db", -60))
+    except Exception:
+        min_db = -60.0
+    try:
+        max_db = float(payload.get("max_db", 0))
+    except Exception:
+        max_db = 0.0
+    if not math.isfinite(min_db): min_db = -60.0
+    if not math.isfinite(max_db): max_db = 0.0
+    if max_db <= min_db:
+        max_db = min_db + 60.0  # ensure a valid span
+
+    try:
+        bins = float(payload.get("bins", 1.0))
+    except Exception:
+        bins = 1.0
+    if not math.isfinite(bins) or bins <= 0.0:
+        bins = 1.0  # avoid ZeroDivisionError
 
     send("progress", stage="analyze", value=0.01)
     dur = trim.ffprobe_duration(path)
 
-    vals = trim.analyze_levels(path, dur,
-        on_progress=lambda fr: send("progress", stage="analyze", value=min(0.95, max(0.0, fr))))
-
+    vals = trim.analyze_levels(
+        path, dur,
+        on_progress=lambda fr: send("progress", stage="analyze",
+                                    value=min(0.95, max(0.0, fr))))
     vals = [v for v in vals if math.isfinite(v)]
+    if not vals:
+        send("progress", stage="analyze", value=1.0)
+        return {"ok": False, "error": "no audio levels parsed"}
 
-    # Match trim.py binning logic
+    # --- binning consistent with trim.py ---
     tenth = [round(v, 1) for v in vals]
-    def bin_start(x): 
+
+    def bin_start(x):
+        # floor to the left edge aligned to min_db, step=bins
         return round(min_db + math.floor((x - min_db) / bins) * bins, 1)
 
     counts = collections.Counter()
@@ -49,16 +73,31 @@ def cmd_analyze(payload):
         if min_db <= x <= max_db:
             counts[bin_start(x)] += 1
 
-    # Build bin edges and % values
+    # build edges
     edges = []
     e = min_db
-    while e <= max_db + 1e-9:
+    # guard loop even if bins is tiny
+    max_steps = 10000
+    steps = 0
+    while e <= max_db + 1e-9 and steps < max_steps:
         edges.append(round(e, 1))
         e += bins
-    ys = [(counts.get(s, 0) / len(tenth) * 100.0) for s in edges[:-1]]
+        steps += 1
+    if len(edges) < 2:
+        edges = [min_db, max_db]  # minimal 1 bin
+
+    total = sum(counts.values())
+    if total <= 0:
+        # nothing fell inside range → return flat zeros
+        ys = [0.0] * (len(edges) - 1)
+        send("progress", stage="analyze", value=1.0)
+        return {"ok": True, "x": edges[:-1], "y": ys}
+
+    ys = [(counts.get(s, 0) / total) * 100.0 for s in edges[:-1]]
 
     send("progress", stage="analyze", value=1.0)
     return {"ok": True, "x": edges[:-1], "y": ys}
+
 
 
 def cmd_trim(payload):

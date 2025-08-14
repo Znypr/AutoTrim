@@ -178,10 +178,44 @@ $('#fileInput').addEventListener('change', async (e)=>{
 
   state.lastXs = xs;
   state.lastYs = ys;
+
+  // Fit sliders to the video’s actual non-empty bins (with small padding)
+  const pad = 1; // 1 dB of breathing room
+  const lo = Math.floor(min) - pad;
+  const hi = Math.ceil(max) + pad;
+
+  // Ensure fine control
+  minRange.step = "0.1";
+  maxRange.step = "0.1";
+
+
+
+  // Update attributes + values so the thumbs start at the video’s min/max
+  minRange.min = String(lo);
+  minRange.max = String(hi);
+  maxRange.min = String(lo);
+  maxRange.max = String(hi);
+
+  // Also re-range the Noise slider to match the video's loudness range
+  const noiseSlider = $('#noiseDb');
+  noiseSlider.min = String(lo);
+  noiseSlider.max = String(hi);
+
+  // Optional: start at a sensible point — midpoint or peak bin
+  const midpoint = (lo + hi) / 2;
+  noiseSlider.value = String(Math.round(midpoint));
+
+  // Update its readout text
+  $('#noiseDbVal').textContent = Number(noiseSlider.value).toFixed(1);
+
+
+  minRange.value = String(Math.max(lo, Math.round(min)));
+  maxRange.value = String(Math.min(hi, Math.round(max)));
+
   $('#minDb').value = String(Math.round(min));
   $('#maxDb').value = String(Math.round(max));
   updateRangeFill();
-  renderHist(xs, ys, Number($('#minDb').value), Number($('#maxDb').value));
+  renderHist(xs, ys, Number(minRange.value), Number(maxRange.value));
 
   setStatus('Histogram ready.');
   setProgress(0);
@@ -251,9 +285,9 @@ async function fetchRmsHistogram(filePath) {
   try {
     if (window.py?.send) {
       const res = await window.py.send("analyze", {
-        path: filePath,
-        min_db: -55, max_db: -10, bins: 0.1
-      });
+  path: filePath,
+  min_db: -80, max_db: 0, bins: 0.1
+});
       console.log('analyze result:', res);
 
       if (res?.ok && Array.isArray(res.x) && Array.isArray(res.y) &&
@@ -285,6 +319,58 @@ async function fetchRmsHistogram(filePath) {
 }
 
 
+// --- Fix overlapped thumbs stealing clicks ---
+const wrap = document.querySelector('.range-wrap');
+
+function valueToX(inp){
+  const min = Number(inp.min), max = Number(inp.max);
+  const frac = (Number(inp.value) - min) / (max - min || 1);
+  return frac * wrap.clientWidth;
+}
+function bringNearestFront(clientX){
+  const rect = wrap.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const xMin = valueToX(minRange);
+  const xMax = valueToX(maxRange);
+  const minIsNearest = Math.abs(x - xMin) <= Math.abs(x - xMax);
+
+  minRange.classList.toggle('front', minIsNearest);
+  maxRange.classList.toggle('front', !minIsNearest);
+}
+
+// Raise the intended thumb *before* pointer events hit inputs
+wrap.addEventListener('pointerdown', (e) => {
+  const cx = e.clientX;                  // ← PointerEvent: use clientX
+  if (Number.isFinite(cx)) bringNearestFront(cx);
+}, { capture: true });
+
+['mousemove','touchmove','pointermove'].forEach(evt=>{  // ← added pointermove
+  wrap.addEventListener(evt, (e)=>{
+    const cx =
+      evt === 'touchmove' ? (e.touches?.[0]?.clientX ?? NaN) :
+      'clientX' in e ? e.clientX : NaN;
+    if (Number.isFinite(cx)) bringNearestFront(cx);
+  }, { passive: true });
+});
+
+// Keep active thumb on top during drag / keyboard use
+[minRange, maxRange].forEach(inp=>{
+  inp.addEventListener('pointerdown', ()=> {
+    minRange.classList.toggle('front', inp === minRange);
+    maxRange.classList.toggle('front', inp === maxRange);
+  });
+  inp.addEventListener('focus', ()=> {
+    minRange.classList.toggle('front', inp === minRange);
+    maxRange.classList.toggle('front', inp === maxRange);
+  });
+  inp.addEventListener('input', ()=> {
+    minRange.classList.toggle('front', inp === minRange);
+    maxRange.classList.toggle('front', inp === maxRange);
+  });
+});
+
+
+
 /* Live value readouts for trim sliders */
 function bindVal(id, fmt){ const i=$(id), v=$(id+'Val'); const up=()=> v.textContent=fmt(i.value); i.addEventListener('input',up); up(); }
 bindVal('#noiseDb', v=>Number(v).toFixed(1));
@@ -294,6 +380,22 @@ bindVal('#keepS',    v=>Number(v).toFixed(2));
 
 /* Start trimming */
 $('#startTrimBtn').addEventListener('click', async ()=>{
+  // If a job is running and we aren’t already cancelling → send cancel
+  if (state.jobId && !state.cancelling) {
+    state.cancelling = true;
+    setStartBtnCancelling();
+    try {
+      await window.py.send('cancel', { job: state.jobId });
+      // We’ll get a job "done" or "error" event shortly, which resets the UI.
+    } catch (e) {
+      console.error(e);
+      state.cancelling = false;
+      setStartBtnActive(); // back to cancelable state
+    }
+    return;
+  }
+
+  // Otherwise, start a new trim
   if (!state.filePath){ setStatus('Pick a video first.'); return; }
 
   const btn = $('#startTrimBtn');
@@ -310,12 +412,8 @@ $('#startTrimBtn').addEventListener('click', async ()=>{
       keep:     Number($('#keepS').value)
     });
 
-    if (res?.ok) {
-      // progress updates come via window.py.onEvent({event:'progress', stage:'detect'|'render', value})
-      // when finished, service.py returns a final message; we just wait for events.
-    } else {
-      throw new Error(res?.error || 'Trim failed to start.');
-    }
+    if (!res?.ok) throw new Error(res?.error || 'Trim failed to start.');
+    // "job started" event will flip the button to Cancel and re-enable it.
   } catch (e) {
     console.error(e);
     setStatus(`Error: ${e.message || e}`);
