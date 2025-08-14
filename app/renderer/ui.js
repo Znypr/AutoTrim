@@ -41,7 +41,7 @@ function setImportFrac(f){ $('#importFill').style.width = `${Math.max(0,Math.min
 
 window.py.onEvent(msg => {
   // Smooth progress updates to one per animation frame to avoid jank
-  if (!window.__prog) window.__prog = { pending: null, raf: 0 };
+  if (!window.__prog) window.__prog = { pending: null, raf: 0, lastUpdate: 0, stalled: false };
 
   const clamp = v => Math.max(0, Math.min(1, v));
 
@@ -52,10 +52,32 @@ window.py.onEvent(msg => {
     const { stage, value } = p;
 
     setProgress(clamp(value));
+    
+    // Check for stalled progress
+    const now = Date.now();
+    if (value > 0 && value < 0.99) {
+      if (now - window.__prog.lastUpdate > 10000) { // 10 seconds
+        window.__prog.stalled = true;
+      } else {
+        window.__prog.stalled = false;
+      }
+    }
+    window.__prog.lastUpdate = now;
+    
     let label = 'Working…';
-    if (stage === 'analyze') label = value >= 1 ? 'Analyzed histogram.' : 'Analyzing histogram…';
-    else if (stage === 'detect') label = value >= 1 ? 'Detected silences.' : 'Detecting silences…';
-    else if (stage === 'render') label = value >= 1 ? 'Rendering…' : 'Rendering…';
+    if (stage === 'analyze') {
+      label = value >= 1 ? 'Analyzed histogram.' : 'Analyzing histogram…';
+    } else if (stage === 'detect') {
+      label = value >= 1 ? 'Detected silences.' : 'Detecting silences…';
+    } else if (stage === 'render') {
+      label = value >= 1 ? 'Rendering…' : 'Rendering…';
+    }
+    
+    // Add stalled indicator
+    if (window.__prog.stalled && value > 0 && value < 0.99) {
+      label += ' (processing…)';
+    }
+    
     setStatus(label + (value >= 1 ? '' : ` ${(value*100|0)}%`));
 
     window.__prog.pending = null;
@@ -73,6 +95,11 @@ window.py.onEvent(msg => {
       state.jobId = msg.id;
       setStartBtnActive();
       setStatus('Detecting silences…'); setProgress(0.01);
+      // Reset progress state for new job
+      if (window.__prog) {
+        window.__prog.lastUpdate = Date.now();
+        window.__prog.stalled = false;
+      }
       return;
     }
     if (state.jobId && msg.id === state.jobId) {
@@ -84,6 +111,7 @@ window.py.onEvent(msg => {
         state.jobId = null; state.cancelling = false; setStartBtnIdle();
       } else if (msg.status === 'error') {
         setStatus(`Error: ${msg.error || 'Failed.'}`); setProgress(0);
+        console.error('Trim error:', msg.error);
         state.jobId = null; state.cancelling = false; setStartBtnIdle();
       }
     }
