@@ -1,165 +1,325 @@
-/* Minimal renderer logic: tabs, file pick, auto histogram with double-thumb range */
+// ui.js
 
 const $  = s => document.querySelector(s);
-const $$ = s => [...document.querySelectorAll(s)];
 
 const state = {
   filePath: null,
   chart: null,
-  rmsMin: -60,
-  rmsMax: -10,
   lastXs: [],
   lastYs: [],
+  jobId: null,
+  cancelling: false,
 };
+
+
+function setStartBtnIdle() {
+  const b = $('#startTrimBtn');
+  b.classList.remove('danger');
+  b.textContent = 'Start';
+  b.disabled = false;
+}
+function setStartBtnActive() {
+  const b = $('#startTrimBtn');
+  b.classList.add('danger');
+  b.textContent = 'Cancel';
+  b.disabled = false;
+}
+function setStartBtnCancelling() {
+  const b = $('#startTrimBtn');
+  b.classList.add('danger');
+  b.textContent = 'Cancelling…';
+  b.disabled = true;
+}
 
 function setStatus(t){ $('#status').textContent = t; }
 function setProgress(v){ $('#progress').value = Math.max(0, Math.min(1, v)); }
-function setImportFrac(f){ $('#importBar').style.width = `${Math.max(0,Math.min(1,f))*100}%`; }
+function setImportFrac(f){ $('#importFill').style.width = `${Math.max(0,Math.min(1,f))*100}%`; }
 
-/* Tabs */
-$$('.tab-btn').forEach(b=>{
-  b.addEventListener('click', ()=>{
-    $$('.tab-btn').forEach(x=>x.classList.remove('active'));
-    b.classList.add('active');
-    const id = b.dataset.tab;
-    $$('.tab').forEach(t=>t.classList.remove('active'));
-    $('#tab-'+id).classList.add('active');
-  });
+window.py.onEvent(msg => {
+  // Smooth progress updates to one per animation frame to avoid jank
+  if (!window.__prog) window.__prog = { pending: null, raf: 0 };
+
+  const clamp = v => Math.max(0, Math.min(1, v));
+
+  const pump = () => {
+    window.__prog.raf = 0;
+    const p = window.__prog.pending;
+    if (!p) return;
+    const { stage, value } = p;
+
+    setProgress(clamp(value));
+    const label =
+      stage === 'analyze' ? 'Analyzing histogram…' :
+      stage === 'detect'  ? 'Detecting silences…'  :
+      stage === 'render'  ? 'Rendering…'           : 'Working…';
+    setStatus(`${label} ${(value*100|0)}%`);
+
+    window.__prog.pending = null;
+  };
+
+  if (msg.event === 'progress' && typeof msg.value === 'number') {
+    window.__prog.pending = { stage: msg.stage || 'working', value: msg.value };
+    if (!window.__prog.raf) window.__prog.raf = requestAnimationFrame(pump);
+    return;
+  }
+
+  if (msg.event === 'job') {
+    if (msg.status === 'started' && msg.kind === 'trim') {
+      state.jobId = msg.id;
+      setStartBtnActive();
+      setStatus('Detecting silences…'); setProgress(0.01);
+      return;
+    }
+    if (state.jobId && msg.id === state.jobId) {
+      if (msg.status === 'finished' && msg.ok) {
+        setStatus(`Done: ${msg.output}`); setProgress(0);
+        state.jobId = null; state.cancelling = false; setStartBtnIdle();
+      } else if (msg.status === 'cancelled') {
+        setStatus('Cancelled.'); setProgress(0);
+        state.jobId = null; state.cancelling = false; setStartBtnIdle();
+      } else if (msg.status === 'error') {
+        setStatus(`Error: ${msg.error || 'Failed.'}`); setProgress(0);
+        state.jobId = null; state.cancelling = false; setStartBtnIdle();
+      }
+    }
+  }
 });
 
-/* File pick (button under thumb) */
+
+
+async function firstFrameURL(file, t = 0) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement('video');
+    v.preload = 'auto';
+    v.muted = true;
+    v.playsInline = true;
+    v.src = URL.createObjectURL(file);
+
+    const cleanup = () => URL.revokeObjectURL(v.src);
+
+    // draw current frame to a JPEG data URL
+    const draw = () => {
+      if (!v.videoWidth || !v.videoHeight) return false;
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      cleanup();
+      resolve(c.toDataURL('image/jpeg', 0.9));
+      return true;
+    };
+
+    // 1) When metadata is ready, try to seek to t (or 0)
+    v.addEventListener('loadedmetadata', () => {
+      try { v.currentTime = Math.min(Math.max(t, 0), (isFinite(v.duration) ? v.duration : 0)); }
+      catch { /* ignore */ }
+    }, { once: true });
+
+    // 2) If we can play, draw immediately (no seek required)
+    v.addEventListener('loadeddata', () => {
+      if (draw()) return;
+      // If we got data but no frame yet, nudge a tiny seek to force a decode
+      try { v.currentTime = (v.currentTime || 0) + 0.000001; } catch {}
+    }, { once: true });
+
+    // 3) After the seek completes, draw
+    v.addEventListener('seeked', () => {
+      if (draw()) return;
+      // Fallback: try after next RAF
+      requestAnimationFrame(() => { if (!draw()) reject(new Error('Could not decode first frame')); });
+    }, { once: true });
+
+    // 4) Best-effort: if supported, wait for an actually decoded frame
+    if ('requestVideoFrameCallback' in v) {
+      // Use as primary path to ensure a decoded frame
+      v.requestVideoFrameCallback(() => {
+        if (draw()) return;
+      });
+    }
+
+    v.addEventListener('error', () => {
+      cleanup();
+      reject(v.error || new Error('video load error'));
+    }, { once: true });
+  });
+}
+
+
+/* File pick */
 $('#pickBtn').addEventListener('click', ()=> $('#fileInput').click());
 $('#fileInput').addEventListener('change', async (e)=>{
   const file = e.target.files?.[0];
-  if(!file) return;
-  state.filePath = file.path || null;
+  if (!file) return;
 
-  // Fake import progress (replace with real IPC stream if you want)
-  setImportFrac(0); setStatus('Importing…');
-  for(let i=1;i<=10;i++){ await new Promise(r=>setTimeout(r,40)); setImportFrac(i/10); }
-
-  const url = URL.createObjectURL(file);
+  // Thumbnail from first frame (image)
+  const frameUrl = await firstFrameURL(file);
   const thumb = $('#thumb');
   thumb.classList.remove('skeleton');
-  thumb.style.backgroundImage = `url(${url})`;
+  thumb.style.backgroundImage = `url(${frameUrl})`;
+  thumb.style.backgroundSize = 'cover';
+  thumb.style.backgroundPosition = 'center';
   $('#meta').textContent = `${file.name} • ${(file.size/1024/1024).toFixed(1)} MB`;
-  setStatus('Analyzing histogram…'); setProgress(0.15);
 
-  // Fetch RMS dist (replace stub with IPC to real backend)
-  const { xs, ys, min, max } = await fetchRmsHistogram(file.path);
-  state.lastXs = xs; state.lastYs = ys; state.rmsMin = min; state.rmsMax = max;
-
-  // Seed range to detected domain (snapped to ints)
-  const minInp = $('#minDb'), maxInp = $('#maxDb');
-  minInp.value = String(Math.round(min));
-  maxInp.value = String(Math.round(max));
-  updateRangeFill();
-
-  renderHist(xs, ys, Number(minInp.value), Number(maxInp.value));
-  setProgress(0); setStatus('Histogram ready.');
-});
-
-/* Double-thumb range handling */
-const minRange = $('#minDb'), maxRange = $('#maxDb');
-const rangeVals = $('#rangeVals');
-
-function updateRangeFill(){
-  const min = Number(minRange.value), max = Number(maxRange.value);
-  if(min > max){ // keep coherent
-    if(document.activeElement === minRange) maxRange.value = String(min);
-    else minRange.value = String(max);
+  // Absolute path for Python
+  let backendPath = file.path;
+  if (!backendPath) {
+    const ab = await file.arrayBuffer();
+    const ext = file.name.split('.').pop() || 'mp4';
+    backendPath = await window.py.saveTemp(ab, ext);  // <- now works without Node in preload
   }
-  const wrap = $('.range-wrap');
-  const trackWidth = wrap.clientWidth;
-  const minX = ((Number(minRange.value) - Number(minRange.min)) / (Number(minRange.max)-Number(minRange.min))) * trackWidth;
-  const maxX = ((Number(maxRange.value) - Number(maxRange.min)) / (Number(maxRange.max)-Number(maxRange.min))) * trackWidth;
-  const left = Math.min(minX, maxX), right = Math.max(minX, maxX);
-  const fill = $('#rangeFill');
-  fill.style.left = `${left}px`;
-  fill.style.width = `${Math.max(0,right-left)}px`;
-  rangeVals.textContent = `${Math.min(min,max)} … ${Math.max(min,max)} dB`;
-}
+  state.filePath = backendPath;
 
-[minRange, maxRange].forEach(inp=>{
-  inp.addEventListener('input', ()=>{
-    updateRangeFill();
-    // Live re-filter (no Analyze button)
-    renderHist(state.lastXs, state.lastYs, Number(minRange.value), Number(maxRange.value));
-  });
+
+  // Histogram
+  setStatus('Analyzing histogram…');
+  setProgress(0.01);
+
+  const { xs, ys, min, max } = await fetchRmsHistogram(state.filePath);
+
+  state.lastXs = xs;
+  state.lastYs = ys;
+  $('#minDb').value = String(Math.round(min));
+  $('#maxDb').value = String(Math.round(max));
+  updateRangeFill();
+  renderHist(xs, ys, Number($('#minDb').value), Number($('#maxDb').value));
+
+  setStatus('Histogram ready.');
+  setProgress(0);
+
 });
 
+
+
+/* Chart */
 function ensureChart(){
   if(state.chart) return state.chart;
   const ctx = $('#histChart').getContext('2d');
   state.chart = new Chart(ctx, {
     type: 'line',
     data: { labels: [], datasets: [{
-      data: [], tension: .35, fill: true, borderWidth: 2,
-      borderColor: '#1db954', backgroundColor: 'rgba(29,185,84,.18)', pointRadius: 0
+      data: [], tension: .35, fill:true, borderWidth:2,
+      borderColor:'#1db954', backgroundColor:'rgba(29,185,84,.18)', pointRadius:0
     }]},
     options: {
-      responsive: true, maintainAspectRatio: false,
-      scales: {
-        x: { ticks:{ color:'#cfcfcf' }, grid:{ color:'rgba(255,255,255,.06)' } },
-        y: { ticks:{ color:'#cfcfcf', callback:v=>v+'%' }, grid:{ color:'rgba(255,255,255,.06)' } }
+      responsive:true, maintainAspectRatio:false,
+      scales:{
+        x:{ ticks:{ color:'#cfcfcf' }, grid:{ color:'rgba(255,255,255,.06)'} },
+        y:{ ticks:{ color:'#cfcfcf', callback:v=>v+'%' }, grid:{ color:'rgba(255,255,255,.06)'} }
       },
-      plugins: { legend:{ display:false }, tooltip:{ mode:'index', intersect:false } }
+      plugins:{ legend:{ display:false }, tooltip:{ mode:'index', intersect:false } }
     }
   });
   return state.chart;
 }
 
 function renderHist(xs, ys, lo, hi){
-  if(!xs?.length || !ys?.length) return;
-  // Filter by visible range; re-normalize to percent for the slice
-  const sel = xs.map((x,i)=>({x:x, y:ys[i]})).filter(p => p.x>=Math.min(lo,hi) && p.x<=Math.max(lo,hi));
-  if(sel.length===0) return;
-  const sum = sel.reduce((a,b)=>a+b.y,0) || 1;
-  const pct = sel.map(p => (p.y / sum) * 100);
+  if(!xs.length) return;
+  const a = Math.min(lo,hi), b = Math.max(lo,hi);
+  const sel = xs.map((x,i)=>({x, y:ys[i]})).filter(p=>p.x>=a && p.x<=b);
+  if(!sel.length) return;
   const ch = ensureChart();
-  ch.data.labels = sel.map(p => p.x.toFixed(1));
-  ch.data.datasets[0].data = pct;
+  ch.data.labels = sel.map(p=>p.x.toFixed(1));
+  ch.data.datasets[0].data = sel.map(p => p.y); // backend already returns %
   ch.update();
 }
 
-/* Stub: generate a plausible distribution + detected min/max
-   Replace with IPC to your Python/FFmpeg backend. */
-async function fetchRmsHistogram(_filePath){
-  // create domain −55 … −10 with two lobes
+
+/* Double-thumb range */
+const minRange = $('#minDb'), maxRange = $('#maxDb');
+function updateRangeFill(){
+  const min = Number(minRange.value), max = Number(maxRange.value);
+  if(min > max){
+    if(document.activeElement === minRange) maxRange.value = String(min);
+    else minRange.value = String(max);
+  }
+  const wrap = document.querySelector('.range-wrap');
+  const track = wrap.clientWidth;
+  const toX = (inp) => ((Number(inp.value)-Number(inp.min)) / (Number(inp.max)-Number(inp.min))) * track;
+  const x1 = toX(minRange), x2 = toX(maxRange);
+  const left = Math.min(x1,x2), right = Math.max(x1,x2);
+  const fill = $('#rangeFill');
+  fill.style.left = `${left}px`;
+  fill.style.width = `${Math.max(0,right-left)}px`;
+  $('#rangeVals').textContent = `${Math.min(min,max)} … ${Math.max(min,max)} dB`;
+}
+[minRange, maxRange].forEach(inp=>{
+  inp.addEventListener('input', ()=>{ updateRangeFill(); renderHist(state.lastXs, state.lastYs, Number(minRange.value), Number(maxRange.value)); });
+});
+updateRangeFill();
+
+async function fetchRmsHistogram(filePath) {
+  try {
+    if (window.py?.send) {
+      const res = await window.py.send("analyze", {
+        path: filePath,
+        min_db: -55, max_db: -10, bins: 0.1
+      });
+      console.log('analyze result:', res);
+
+      if (res?.ok && Array.isArray(res.x) && Array.isArray(res.y) &&
+          res.x.length > 0 && res.y.length > 0) {
+        const xs = res.x.map(Number);
+        const ys = res.y.map(Number);
+        const nz = xs.filter((x,i) => isFinite(ys[i]) && ys[i] > 0);
+        const min = nz.length ? Math.min(...nz) : Math.min(...xs);
+        const max = nz.length ? Math.max(...nz) : Math.max(...xs);
+        return { xs, ys, min, max };
+      }
+      console.warn('Analyze returned no data; falling back.', res?.error || '');
+    }
+  } catch (e) {
+    console.error('Analyze threw:', e);
+  }
+
+  // fallback preview
   const xs = [];
-  for(let x=-55;x<=-10;x+=0.1) xs.push(Number(x.toFixed(1)));
-  const ys = xs.map(x=>{
-    const a = Math.exp(-Math.pow((x+28)/2.3,2));
-    const b = .8*Math.exp(-Math.pow((x+21)/3.2,2));
-    return (a+b)*1000;
+  for (let x = -55; x <= -10; x += 0.1) xs.push(Number(x.toFixed(1)));
+  const ysRaw = xs.map(x => {
+    const a = Math.exp(-Math.pow((x + 28) / 2.3, 2));
+    const b = 0.8 * Math.exp(-Math.pow((x + 21) / 3.2, 2));
+    return (a + b) * 1000;
   });
-  const min = Math.min(...xs), max = Math.max(...xs);
-  await new Promise(r=>setTimeout(r,200));
-  return { xs, ys, min, max };
+  const total = ysRaw.reduce((s,v)=>s+v,0) || 1;
+  const ys = ysRaw.map(v => (v / total) * 100);
+  return { xs, ys, min: -50, max: -5 };
 }
 
-/* Trim sliders live labels */
+
+/* Live value readouts for trim sliders */
 function bindVal(id, fmt){ const i=$(id), v=$(id+'Val'); const up=()=> v.textContent=fmt(i.value); i.addEventListener('input',up); up(); }
 bindVal('#noiseDb', v=>Number(v).toFixed(1));
 bindVal('#silenceS', v=>Number(v).toFixed(2));
 bindVal('#padS',     v=>Number(v).toFixed(2));
 bindVal('#keepS',    v=>Number(v).toFixed(2));
 
-/* Start trim (wire to backend later) */
-$('#startTrimBtn').addEventListener('click', ()=>{
-  if(!state.filePath){ setStatus('Pick a video first.'); return; }
-  setStatus('Detecting silences…'); setProgress(.1);
-  // TODO: send IPC to backend with noise/silence/pad/keep and track progress
-});
+/* Start trimming */
+$('#startTrimBtn').addEventListener('click', async ()=>{
+  if (!state.filePath){ setStatus('Pick a video first.'); return; }
 
-const importBar = document.getElementById('importProgress');
+  const btn = $('#startTrimBtn');
+  btn.disabled = true;
+  setProgress(0);
+  setStatus('Detecting silences…');
 
-function setImportProgress(v){ importBar.value = Math.max(0, Math.min(1, v)); }
+  try {
+    const res = await window.py.send('trim', {
+      path: state.filePath,
+      noise_db: Number($('#noiseDb').value),
+      silence:  Number($('#silenceS').value),
+      pad:      Number($('#padS').value),
+      keep:     Number($('#keepS').value)
+    });
 
-document.getElementById('fileInput').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  setImportProgress(0.15);
-  // … your current thumbnail/meta code
-  setImportProgress(0.0);   // reset when done (or keep if you add real copy/scan progress)
+    if (res?.ok) {
+      // progress updates come via window.py.onEvent({event:'progress', stage:'detect'|'render', value})
+      // when finished, service.py returns a final message; we just wait for events.
+    } else {
+      throw new Error(res?.error || 'Trim failed to start.');
+    }
+  } catch (e) {
+    console.error(e);
+    setStatus(`Error: ${e.message || e}`);
+    setProgress(0);
+    btn.disabled = false;
+  }
 });

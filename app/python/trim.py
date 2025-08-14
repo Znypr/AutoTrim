@@ -1,12 +1,19 @@
+
+# python/trim.py
 from collections import Counter
-import argparse, math, os, re, subprocess, sys, threading
+import argparse, math, os, re, subprocess, sys, threading, shlex
 from typing import List, Tuple
 import json
 import numpy as np
+import signal
 import math
 from collections import Counter
 import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
+
+TIME_RE = re.compile(r'time=(\d{2}):(\d{2}):(\d{2})[.,](\d{2})')
+
+CANCEL = threading.Event()
 
 # ---------------- Utility ----------------
 
@@ -34,14 +41,15 @@ def _patch_ffmpeg_path():
         os.environ["PATH"] = ffdir + os.pathsep + os.environ.get("PATH", "")
 _patch_ffmpeg_path()
 
+def _hhmmss_to_seconds(h, m, s, cs):
+    return int(h)*3600 + int(m)*60 + int(s) + int(cs)/100.0
 
 def run_ffmpeg_progress(cmd: List[str], total: float, desc: str, on_progress=None) -> str:
-    """Run ffmpeg command and display a simple progress bar.
-    If on_progress is provided, it will be called with a float in [0,1].
-    """
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, bufsize=1, **_popen_hidden_kwargs())
-
+    """Run ffmpeg and stream progress. Cancellation via trim.CANCEL."""
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1, **_popen_hidden_kwargs()
+    )
 
     err_lines: List[str] = []
 
@@ -51,10 +59,7 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str, on_progress=Non
 
     threading.Thread(target=_stderr_reader, daemon=True).start()
 
-    # console may be None in a windowed app
     err_stream = sys.stderr if getattr(sys, "stderr", None) else None
-
-    bar_len = 40
     if err_stream:
         print(f"{desc}:", file=err_stream)
 
@@ -65,51 +70,79 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str, on_progress=Non
         hh, mm, ss = s.split(":")
         return int(hh) * 3600 + int(mm) * 60 + float(ss)
 
-    while True:
-        line = proc.stdout.readline()
-        if line == "" and proc.poll() is not None:
-            break
+    bar_len = 40
+    try:
+        while True:
+            # early cancel
+            if CANCEL.is_set():
+                try: proc.terminate()
+                except Exception: pass
+                proc.wait(timeout=3)
+                raise RuntimeError("CANCELLED")
 
-        out_time = None
-        if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
-            val = line.split("=", 1)[1].strip()
-            if val != "N/A":
-                out_time = float(val) / 1_000_000.0
-        elif line.startswith("out_time="):
-            sec = _parse_hms(line.split("=", 1)[1])
-            if sec is not None:
-                out_time = sec
+            line = proc.stdout.readline()
+            if line == "" and proc.poll() is not None:
+                break
 
-        if out_time is None:
-            continue
+            out_time = None
+            if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
+                val = line.split("=", 1)[1].strip()
+                if val != "N/A":
+                    out_time = float(val) / 1_000_000.0
+            elif line.startswith("out_time="):
+                sec = _parse_hms(line.split("=", 1)[1])
+                if sec is not None:
+                    out_time = sec
 
-        frac = 0.0
-        if total and total > 0:
-            frac = min(max(out_time / total, 0.0), 1.0)
+            if out_time is None:
+                continue
 
-        # console progress (only if a console exists)
+            frac = 0.0
+            if total and total > 0:
+                frac = min(max(out_time / total, 0.0), 1.0)
+
+            if err_stream:
+                filled = int(bar_len * frac)
+                bar = "#" * filled + "-" * (bar_len - filled)
+                err_stream.write(f"\r[{bar}] {frac*100:5.1f}%")
+                err_stream.flush()
+
+            if on_progress:
+                try: on_progress(frac)
+                except Exception: pass
+
+            if CANCEL.is_set():
+                try: proc.terminate()
+                except Exception: pass
+                proc.wait(timeout=3)
+                raise RuntimeError("CANCELLED")
+
+    finally:
         if err_stream:
-            filled = int(bar_len * frac)
-            bar = "#" * filled + "-" * (bar_len - filled)
-            err_stream.write(f"\r[{bar}] {frac*100:5.1f}%")
+            err_stream.write("\n")
             err_stream.flush()
-
-        # GUI callback
-        if on_progress:
-            try:
-                on_progress(frac)
-            except Exception:
-                pass
-
-    if err_stream:
-        err_stream.write("\n")
-        err_stream.flush()
 
     proc.wait()
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
     return "".join(err_lines)
 
+def run_ffmpeg_with_progress(cmd:list[str], total_dur_sec:float, on_progress=None) -> int:
+    """
+    cmd: list for subprocess (already split)
+    total_dur_sec: full input duration in seconds
+    on_progress: callable(fraction: float) where 0..1
+    Returns ffmpeg's returncode.
+    """
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, universal_newlines=True)
+    # read stderr line-by-line
+    for line in p.stderr:
+        m = TIME_RE.search(line)
+        if m and on_progress and total_dur_sec > 0:
+            cur = _hhmmss_to_seconds(*m.groups())
+            frac = max(0.0, min(1.0, cur / total_dur_sec))
+            on_progress(frac)
+    return p.wait()
 
 # ---------------- Argument Parsing ----------------
 def parse_args():
@@ -168,7 +201,6 @@ def detect_silences(input_path: str, noise: str, min_silence: float,
     txt = run_ffmpeg_progress(cmd, dur, "detect")
     starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+(?:\.\d+)?)", txt)]
     ends   = [float(x) for x in re.findall(r"silence_end:\s*(\d+(?:\.\d+)?)",   txt)]
-    print(f"[silence] noise={noise_norm} silence={min_silence} \u2192 {len(starts)} starts, {len(ends)} ends")
     return starts, ends, txt
 
 # ---------------- Segment Building ----------------
@@ -213,28 +245,28 @@ def cut_and_concat(input_path: str, segments: List[Tuple[float, float]],
                    output_path: str, progress=None):
     """
     Frame-accurate trimming via trim/atrim + concat (single re-encode).
-    Eliminates duplicate/overlapping audio-video at joins.
+    Emits progress via ffmpeg -progress, exactly once.
     """
     # safety: sort + merge tiny gaps/overlaps
     def _coalesce(segs, eps=0.03):
         if not segs: return []
         out = []
-        for s,e in sorted(segs):
+        for s, e in sorted(segs):
             if not out or s > out[-1][1] + eps:
-                out.append([s,e])
+                out.append([s, e])
             else:
                 out[-1][1] = max(out[-1][1], e)
-        return [(round(s,3), round(e,3)) for s,e in out]
+        return [(round(s, 3), round(e, 3)) for s, e in out]
 
     segments = _coalesce(segments)
 
     eps = 0.010  # shave 10 ms off each tail to avoid clicks
-    clips = [(max(0.0, s), max(0.0, e - eps)) for s,e in segments if e - s > eps]
+    clips = [(max(0.0, s), max(0.0, e - eps)) for s, e in segments if e - s > eps]
     if not clips:
         print("No valid segments to cut."); sys.exit(0)
 
     vf, af = [], []
-    for i,(st,et) in enumerate(clips):
+    for i, (st, et) in enumerate(clips):
         vf.append(f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{i}]")
         af.append(f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
     concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
@@ -244,9 +276,7 @@ def cut_and_concat(input_path: str, segments: List[Tuple[float, float]],
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cmd = [
-
-        "ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y",
-
+        "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
         "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
@@ -256,26 +286,11 @@ def cut_and_concat(input_path: str, segments: List[Tuple[float, float]],
         output_path,
     ]
 
-    if progress:
-        progress(0.0)
-        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True, bufsize=1) as proc:
-            for line in proc.stdout:
-                if line.startswith("out_time_ms="):
-                    out_ms = int(line.strip().split("=", 1)[1])
-                    progress(min(out_ms / (total_len * 1_000_000), 1.0))
-            rc = proc.wait()
-    else:
-        rc = subprocess.run(cmd).returncode
-    if rc != 0:
-        sys.exit(rc)
-
-    total = sum(et - st for st, et in clips)
+    # Single invocation with progress callback (if provided)
     try:
-        run_ffmpeg_progress(cmd, total, "render")
+        run_ffmpeg_progress(cmd, total_len, "render", on_progress=progress)
     except subprocess.CalledProcessError as e:
         sys.exit(e.returncode)
-
 
 def trim_video(input_path: str, noise: str, silence: float, pad: float,
                keep: float, output_path: str, progress=None) -> str:
@@ -300,7 +315,7 @@ def _lavfi_escape_path(p: str) -> str:
     return "'" + p.replace("\\", "\\\\").replace(":", "\\:").replace(",", "\\,").replace("'", r"\'") + "'"
 
 
-def analyze_levels(input_path: str, dur: float) -> List[float]:
+def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]:
     """
     Return one RMS dBFS per decoded audio frame (channels averaged).
     Uses ffprobe over a lavfi graph for reliable per-frame tags.
@@ -430,9 +445,7 @@ def print_histogram_table(vals: List[float], min_db: int, max_db: int, top_n: in
     rows = sorted(((lvl, cnt, 100.0 * cnt / total) for lvl, cnt in counts.items()
                    if min_db <= lvl <= max_db),
                   key=lambda r: (-r[1], r[0]))
-    print("Top levels (dBFS to 0.1) — count & percent:")
-    for lvl, cnt, pct in rows[:top_n]:
-        print(f"{lvl:>6.1f} dB  {cnt:>7d}  {pct:6.2f}%")
+
 
 # ---------------- Main ----------------
 def main():

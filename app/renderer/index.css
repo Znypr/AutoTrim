@@ -1,161 +1,89 @@
-:root{
-  --bg:#121212; --card:#181818; --muted:#a7a7a7; --txt:#eaeaea; --accent:#1db954;
-  --panel:#141414; --rail:#0d0d0d;
-}
+:root {
+  --bg: #121212;
+  --card: #161616;
+  --muted: #a7a7a7;
+  --txt: #eaeaea;
+  --accent: #1db954;
 
-html,body{height:100%;margin:0;background:var(--bg);color:var(--txt);
-  font-family: system-ui, Segoe UI, Inter, Arial;}
-
-.titlebar{
-  display:flex; align-items:center; justify-content:space-between;
-  padding:12px 16px; background:#0f0f0f; border-bottom:1px solid #000;
-}
-.appname{font-weight:800; font-size:18px;}
-.btn{border:0; padding:10px 14px; border-radius:999px; cursor:pointer; font-weight:700;}
-.btn.primary{background:var(--accent); color:#000;}
-.btn.primary:disabled{opacity:.55; cursor:default;}
-.btn.wide{width:100%;}
-
-.shell{
-  display:grid; grid-template-columns: 340px 1fr; gap:16px;
-  padding:16px; padding-bottom:64px;  /* leave space above statusbar */
-}
-
-.card{background:var(--card); border-radius:16px; padding:14px;}
-.stack{display:flex; flex-direction:column; gap:12px;}
-
-.tabs{display:flex; gap:8px;}
-.tab-btn{
-  background:#151515; color:var(--txt); border:0; padding:10px 16px;
-  border-radius:12px; font-weight:700; cursor:pointer;
-}
-.tab-btn.active{background:#1a1a1a;}
-
-.tab{display:none;}
-.tab.active{display:block;}
-.tab-title{font-weight:800; margin-bottom:8px; font-size:15px;}
-
-.row{display:grid; grid-template-columns: 320px 1fr; gap:16px;}
-.controls{background:#161616; border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:10px;}
-.panel{background:var(--panel); border-radius:14px; padding:12px; min-height:380px;}
-.panel-empty{display:flex; align-items:center; justify-content:center; color:var(--muted);}
-.panel-hint{opacity:.8; font-size:14px}
-
-/* Panel header */
-.panel-title{
-  font-weight: 800;
-  margin-bottom: 10px;
-}
-
-/* Two rows: sliders (1fr) + button (auto). Ensures button is always below. */
-.controls-grid{
-  display: grid;
-  grid-template-rows: 1fr auto;
-  gap: 14px;
-  min-height: 300px;                /* enough space for tall sliders */
-}
-.thumb{
-  width:100%; aspect-ratio:16/9; border-radius:12px;
-  background:#101010 center/cover no-repeat;
-}
-.skeleton{background:linear-gradient(90deg,#141414,#191919,#141414);
-  background-size:200% 100%; animation:sk 1.2s linear infinite;}
-@keyframes sk{0%{background-position:0 0}100%{background-position:200% 0}}
-.meta{margin-top:10px; color:var(--muted); font-size:13px;}
-
-.v-sliders{
-  display: flex;
-  justify-content: space-evenly;    /* equal spacing */
-  align-items: stretch;
-  gap: 28px;
-  padding: 6px 8px 0 8px;           /* keeps thumbs away from panel edges */
-}
-.v-sliders.four{height:260px;}
-.vcol{
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;   /* spreads label/slider/value evenly */
-  width: 72px;                      /* same width for all columns */
-  height: 240px;                    /* controls total column height */
-}
-
-.vlabel{ font-size: 12px; color: var(--muted); line-height: 1; }
-.vval  { font-size: 12px; color: var(--muted); line-height: 1; }
-.vcol .label,.vcol .value{font-size:12px; color:var(--muted);}
-
-/* Vertical slider */
-.vslider{
-  -webkit-appearance: none;
-  appearance: none;
-  writing-mode: bt-lr;              /* legacy vertical */
-  transform: rotate(270deg);
-  transform-origin: 50% 50%;
-  width: 170px;                     /* ← visual height after rotation */
-  height: 6px;                      /* ← track thickness */
-  background: #2a2a2a;
-  border-radius: 999px;
-  outline: none;
-  margin: 0;                        /* avoid surprise overflow */
-}
-.vslider::-webkit-slider-thumb{
-  -webkit-appearance: none;
-  appearance: none;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 0;
-  cursor: pointer;
-}
-.vslider::-moz-range-thumb{
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: var(--accent); border: 0;
-}
-
-/* Import progress (indeterminate) */
-.progress{height:8px; background:#222; border-radius:999px; overflow:hidden; margin-top:10px;}
-.progress .bar{height:100%; width:35%; background:var(--accent); border-radius:999px;
-  animation:ind 1.1s cubic-bezier(.4,0,.2,1) infinite;}
-.progress.indeterminate .bar{animation:ind 1.1s cubic-bezier(.4,0,.2,1) infinite;}
-@keyframes ind{0%{transform:translateX(-120%)}100%{transform:translateX(420%)}}
-
-/* Bottom statusbar */
-.statusbar{
-  position:fixed; left:0; right:0; bottom:0; height:36px;
-  display:flex; align-items:center; gap:12px; padding:0 12px; background:#0f0f0f; border-top:1px solid #000;
-}
-.statusbar progress{width:320px; height:6px; background:#222; border-radius:999px; overflow:hidden;}
-statusbar progress::-webkit-progress-bar{background:#222}
-statusbar progress::-webkit-progress-value{background:var(--accent)}
-
-
-/* ===== Layout tuning ===== */
-
-:root{
-  --leftW: 360px;        /* thumbnail column width */
-  --paramW: 460px;       /* parameter panel width */
-  --panelH: 320px;       /* equal height for thumb + params (reduced) */
+  --leftW: 360px;
+  --histW: 300px;
+  --paramW: 310px;
+  --panelH: 300px;
   --gap: 16px;
 }
 
-/* The main content area: left (thumb) + right (tabs/panels) */
-.content-grid{
+html,
+body {
+  height: auto;
+  margin: 0;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: system-ui, Segoe UI, Inter, Arial;
+}
+
+/* Title bar */
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #0f0f0f;
+  border-bottom: 1px solid #000;
+}
+
+.appname {
+  font-weight: 800;
+  font-size: 18px;
+}
+
+/* Buttons */
+
+.btn.danger {
+  background: #e74c3c;
+  color: #fff;
+}
+.btn.danger:disabled {
+  opacity: .7;
+}
+
+.btn {
+  border: 0;
+  padding: 10px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: #000;
+}
+
+.btn.primary:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.btn.wide {
+  width: 100%;
+}
+
+/* Layout */
+.content-grid {
   display: grid;
   grid-template-columns: var(--leftW) 1fr;
   gap: var(--gap);
-  align-items: start;
-  max-width: 1280px;     /* keeps the app from becoming unreasonably wide */
+  padding: 16px 16px 56px;
+  /* leave space for statusbar */
+  max-width: 1260px;
   margin: 0 auto;
 }
 
-/* Left column (thumbnail + button) */
-.left-col{
-  padding: 0;            /* remove unnecessary inner spacing */
-}
+#thumb { background-repeat: no-repeat; }
 
-/* Thumbnail card — same height as parameter card */
-.thumb-card{
+
+/* LEFT column */
+.thumb-card {
   background: var(--card);
   border-radius: 16px;
   padding: 12px;
@@ -165,119 +93,236 @@ statusbar progress::-webkit-progress-value{background:var(--accent)}
   gap: 10px;
 }
 
-.thumb{
-  flex: 1 1 auto;
-  border-radius: 12px;
-  background:#101010;
-  background-size: cover;
-  background-position: center;
-  min-height: 0;         /* prevents overflow */
+.content-grid {
+  align-items: stretch; /* make columns equal height */
+}
+.thumb-card {
+  height: auto; /* let it stretch instead of fixed var(--panelH) */
 }
 
-.file-meta{
+.thumb {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 12px;
+  background: #101010 center/cover no-repeat;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #141414, #191919, #141414);
+  background-size: 200% 100%;
+  animation: sk 1.2s linear infinite;
+}
+
+@keyframes sk {
+  0% {
+    background-position: 0 0
+  }
+
+  100% {
+    background-position: 200% 0
+  }
+}
+
+.file-meta {
   font-size: 12px;
   color: var(--muted);
 }
 
-.pick-wrap{
-  margin-top: 4px;
-}
-
-/* Right side: tabs row sits above the panels */
-.right-col{
-  min-width: 680px;
-}
-
-/* Parameter panels (Trim / Histogram) */
-.param-card{
-  width: var(--paramW);
-  height: var(--panelH);
-  background: var(--panel);
-  border-radius: 16px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.import-progress {
+  height: 8px;
+  background: #222;
+  border-radius: 999px;
   overflow: hidden;
 }
 
-/* When a panel sits next to a chart/placeholder on the right */
-.panel-row{
-  display: grid;
-  grid-template-columns: var(--paramW) 1fr;
-  gap: var(--gap);
-  align-items: stretch;
-  margin-bottom: 8px;    /* less empty space above bottom status bar */
+.import-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
 }
 
-/* The right-hand companion panel (chart / info) */
-.side-panel{
-  background: var(--panel);
+/* RIGHT column = Histogram (fixed width) + Trim params (fixed width) */
+.right-grid {
+  display: grid;
+  grid-template-columns: var(--histW) var(--paramW);
+  gap: var(--gap);
+  align-items: start;
+}
+
+.panel {
+  background: var(--card);
   border-radius: 16px;
   padding: 14px;
   min-height: var(--panelH);
 }
 
-/* Vertical sliders tightened and kept inside the card */
-.v-sliders{
-  display: flex;
-  gap: 22px;             /* tighter */
-  align-items: flex-end; /* aligns knobs visually */
-  height: 200px;         /* shorter: reduces panel height needs */
+.card-title {
+  font-weight: 800;
+  margin-bottom: 8px;
 }
 
-.vcol{
-  width: 56px;
+/* Histogram chart */
+.chart-wrap {
+  height: 200px;
+}
+
+/* Range below chart */
+.h-range .range-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 8px 0 6px;
+}
+
+.range-wrap {
+  position: relative;
+  height: 28px;
+  display: flex;
+  align-items: center;
+}
+
+.range-wrap input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  position: absolute;
+  margin: 0;
+  pointer-events: auto;
+
+}
+
+.range-wrap input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.range-wrap input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: -5px;
+  cursor: pointer;
+}
+
+.range-fill {
+  position: absolute;
+  height: 6px;
+  background: #222;
+  border-radius: 999px;
+  left: 0;
+  width: 0;
+  pointer-events: none;
+}
+
+/* Trimming Parameters: evenly spaced vertical sliders */
+
+.param-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--card);
+}
+
+.v-sliders {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  height: 210px;
+  gap: 12px;
+}
+.vcol {
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  height: 100%;
 }
-
-.vcol .label,
-.vcol .value{
+.vval {
   font-size: 12px;
   color: var(--muted);
 }
 
-/* Slider track/knob size so knobs don’t stick out of the card */
-.vslider{
+.vlabel {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.15;
+}
+
+.vlabel .unit {
+  font-size: 11px;
+  font-weight: normal;
+}
+
+.vslider {
   -webkit-appearance: none;
   appearance: none;
   writing-mode: bt-lr;
   transform: rotate(270deg);
-  width: 150px;          /* a bit shorter than before */
+  width: 150px;
   height: 6px;
-  background: #2a2a2a;
   border-radius: 999px;
+  background: #222;
   outline: none;
+  margin: 0;
 }
-.vslider::-webkit-slider-thumb{
-  -webkit-appearance:none;
-  width: 14px; height: 14px;      /* slightly smaller */
+
+.vslider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--accent);
-  border: 0;
   cursor: pointer;
 }
 
-/* Trim/Histogram headers */
-.card-title{
-  font-weight: 800;
-  margin-bottom: 2px;
+/* Status bar */
+.statusbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--bg);
+  border-top: 1px solid #000;
 }
 
-/* Tabs spacing */
-.tabs{
-  padding: 6px 0 10px 0;           /* tighter */
+.statusbar progress {
+  -webkit-appearance: none; 
+  appearance: none;
+  width: 320px;
+  height: 10px;
+  border: none;
+  border-radius: 999px;
+  overflow: hidden;
+  background-color: #222; 
+}
+/* make track exactly #222 */
+.statusbar progress::-webkit-progress-bar { background-color: #222; }
+
+/* make fill exactly var(--accent) */
+.statusbar progress::-webkit-progress-value {
+  background-color: var(--accent);
+  background-image: none;
 }
 
-/* Bottom status bar remains pinned; shorten overall empty space above it */
-.statusbar{
-  height: 32px;
-}
-
-/* Keep canvases from stretching excessively tall */
-.chart-wrap{
-  height: calc(var(--panelH) - 24px);
+/* Firefox fill */
+.statusbar progress::-moz-progress-bar {
+  background-color: var(--accent);
+  background-image: none;
 }
