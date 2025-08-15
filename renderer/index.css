@@ -96,8 +96,18 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   border-radius: 12px;
-  background: #101010 center/cover no-repeat;
+
+  /* Two layers: main thumbnail (100%), blurred/faded fill */
+  background-image: var(--thumb-url), var(--thumb-url);
+  background-repeat: no-repeat, no-repeat;
+  background-position: center, center;
+  background-size: var(--thumb-fore-size, contain), cover;
+
+  /* Lower opacity effect for the background fill layer */
+  background-color: rgba(0,0,0,0.55); 
+  background-blend-mode: normal, multiply;
 }
+
 
 .skeleton {
   background: linear-gradient(90deg, #141414, #191919, #141414);

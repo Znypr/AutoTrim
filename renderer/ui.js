@@ -310,9 +310,14 @@ async function handleFileSelection(backendPath, fileName) {
     if (th?.ok && th.dataUrl) {
       const thumb = DOMElements.thumb;
       thumb.classList.remove("skeleton");
-      thumb.style.backgroundImage = `url(${th.dataUrl})`;
-      thumb.style.backgroundSize = "contain";
-      thumb.style.backgroundPosition = "center";
+      thumb.style.setProperty("--thumb-url", `url(${th.dataUrl})`);
+
+      const img = new Image();
+      img.onload = () => {
+        const isPortrait = img.naturalHeight > img.naturalWidth;
+        thumb.style.setProperty("--thumb-fore-size", isPortrait ? "contain" : "cover");
+      };
+      img.src = th.dataUrl;
     }
   } catch {}
 
