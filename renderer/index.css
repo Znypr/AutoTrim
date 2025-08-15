@@ -77,9 +77,8 @@ body {
   padding: 12px; 
   max-width: 1260px;
   margin: 0 auto;
+  align-items: stretch;
 }
-
-#thumb { background-repeat: no-repeat; }
 
 
 .thumb-card {
@@ -90,13 +89,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.content-grid {
-  align-items: stretch;
-}
-.thumb-card {
-  height: auto; 
 }
 
 .thumb {
@@ -435,17 +427,11 @@ body {
 
 
 
-/* In index.css */
-
-/* --- Updated Panel Flipping Logic --- */
-
-/* By default, hide the legend and presets panels */
 .param-back,
 .param-presets {
   display: none;
 }
 
-/* When showing info, hide front and presets, show back */
 .param-card.show-info .param-front,
 .param-card.show-info .param-presets {
   display: none;
@@ -454,7 +440,6 @@ body {
   display: flex;
 }
 
-/* When showing presets, hide front and back, show presets */
 .param-card.show-presets .param-front,
 .param-card.show-presets .param-back {
   display: none;
@@ -466,13 +451,12 @@ body {
 }
 
 
-/* --- New Preset Panel Styles --- */
 
 .preset-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto; /* Add scroll if list is long */
+  overflow-y: auto; 
 }
 
 .preset-item {
@@ -507,5 +491,6 @@ body {
 }
 
 .preset-delete:hover {
-  color: #e74c3c; /* Red hover for delete */
+  color: #e74c3c; 
 }
+

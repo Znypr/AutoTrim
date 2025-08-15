@@ -1,4 +1,3 @@
-// --- add near the top with other requires ---
 const { app, BrowserWindow, Menu, globalShortcut, ipcMain, dialog, screen, shell } = require('electron');
 
 const { spawn } = require('child_process');
@@ -8,7 +7,7 @@ const os = require('os');
 
 let py;
 let windows = new Set();
-const replyQueue = []; // pending requests awaiting a non-event reply
+const replyQueue = []; 
 
 // --- simple JSON settings persisted in userData ---
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
@@ -25,11 +24,20 @@ function writeSettings(next){
 }
 
 function startPython() {
-  const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-  const servicePath = path.join(__dirname, 'python', 'service.py');
-  py = spawn(pyCmd, [servicePath], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const isPackaged = app.isPackaged;
+  let pyCmd;
+  let args = [];
 
-  // ---- line-by-line reader over stdout ----
+  if (isPackaged) {
+    const exePath = path.join(process.resourcesPath, 'python', 'service.exe');
+    pyCmd = exePath;
+  } else {
+    pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    args = [path.join(__dirname, 'python', 'service.py')];
+  }
+
+  py = spawn(pyCmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+
   let buf = '';
   py.stdout.on('data', chunk => {
     buf += chunk.toString();
@@ -41,11 +49,11 @@ function startPython() {
     }
   });
 
-  // Surface python/ffmpeg errors in dev to diagnose issues
-  if (!app.isPackaged && py.stderr) py.stderr.on('data', d => process.stderr.write(`[py] ${d}`));
-  if (!app.isPackaged) py.on('close', code => console.warn(`[py] exited with code ${code}`));
+  if (!isPackaged) {
+    py.stderr.on('data', d => process.stderr.write(`[py] ${d}`));
+    py.on('close', code => console.warn(`[py] exited with code ${code}`));
+  }
 }
-
 function handlePythonLine(line) {
   if (!line.trim()) return;
   let msg;
@@ -71,7 +79,6 @@ function pyRequest(payload) {
   });
 }
 
-// keep your createWindow but register the window
 function createWindow() {
   const win = new BrowserWindow({
     useContentSize: true,
@@ -134,7 +141,6 @@ ipcMain.handle('sys:openFile', (_evt, path) => {
 });
 
 
-// keep your temp writer
 ipcMain.handle('py:saveTemp', async (_evt, { arrayBuffer, ext = 'mp4' }) => {
   const safeExt = String(ext).replace(/^\./, '') || 'mp4';
   const tmpPath = path.join(os.tmpdir(), `autotrim-${Date.now()}.${safeExt}`);
@@ -143,14 +149,12 @@ ipcMain.handle('py:saveTemp', async (_evt, { arrayBuffer, ext = 'mp4' }) => {
   return tmpPath;
 });
 
-// NEW: renderer → python request using the queue
 ipcMain.handle('py:send', async (_evt, payload) => {
   if (!py) return { ok: false, error: 'Python service not running' };
   try { return await pyRequest(payload); }
   catch (e) { return { ok: false, error: String(e) }; }
 });
 
-// Save dialog for choosing output path
 ipcMain.handle('sys:chooseSave', async (_evt, opts = {}) => {
   try {
     const suggested = String(opts.suggestedName || 'trimmed.mp4');
@@ -169,7 +173,6 @@ ipcMain.handle('sys:chooseSave', async (_evt, opts = {}) => {
   }
 });
 
-// Open dialog for choosing input file, honoring default input directory
 ipcMain.handle('sys:chooseOpen', async (_evt, opts = {}) => {
   try {
     const st = readSettings();
@@ -188,7 +191,6 @@ ipcMain.handle('sys:chooseOpen', async (_evt, opts = {}) => {
   }
 });
 
-// Choose a directory (e.g., default input/output folders)
 ipcMain.handle('sys:chooseDir', async (_evt, opts = {}) => {
   try {
     const res = await dialog.showOpenDialog({
@@ -203,7 +205,6 @@ ipcMain.handle('sys:chooseDir', async (_evt, opts = {}) => {
   }
 });
 
-// Read/write settings
 ipcMain.handle('sys:getSettings', async () => {
   const st = readSettings();
   return { ok: true, settings: st };
@@ -214,7 +215,6 @@ ipcMain.handle('sys:setSettings', async (_evt, partial = {}) => {
   return { ok: writeSettings(next), settings: next };
 });
 
-// Path utilities and fs stat for renderer
 ipcMain.handle('sys:pathJoin', async (_evt, a, b) => {
   try { return { ok: true, path: path.join(String(a||''), String(b||'')) }; }
   catch (e) { return { ok: false, error: String(e) }; }
@@ -228,7 +228,6 @@ ipcMain.handle('sys:fsStat', async (_evt, targetPath) => {
   }
 });
 
-// boot
 app.whenReady().then(() => {
   startPython();
   createWindow();

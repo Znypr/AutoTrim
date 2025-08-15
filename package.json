@@ -1,0 +1,45 @@
+{
+  "name": "autotrim",
+  "version": "0.1.0",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.0"
+  },
+  "build": {
+    "appId": "com.znypr.autotrim",
+    "productName": "AutoTrim App",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../python/dist/service.exe",
+        "to": "service/service.exe"
+      },
+      {
+      "from": "build_assets/python",
+      "to": "python"
+      },
+      {
+        "from": "../ffmpeg",
+        "to": "service/ffmpeg"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    }
+  }
+}
