@@ -311,7 +311,7 @@ async function handleFileSelection(backendPath, fileName) {
       const thumb = DOMElements.thumb;
       thumb.classList.remove("skeleton");
       thumb.style.backgroundImage = `url(${th.dataUrl})`;
-      thumb.style.backgroundSize = "cover";
+      thumb.style.backgroundSize = "contain";
       thumb.style.backgroundPosition = "center";
     }
   } catch {}
