@@ -83,6 +83,7 @@ function createWindow() {
   const win = new BrowserWindow({
     useContentSize: true,
     show: false,
+    resizable: false,
     backgroundColor: '#121212',
     autoHideMenuBar: true,
     icon: path.join(__dirname,'assets',
@@ -115,7 +116,7 @@ function createWindow() {
       const EXTRA_W = 45;   // breathing room around cards
       const EXTRA_H = 40;   // account for status bar + spacing
       const MIN_W = 1030;   // ensure comfortable default width
-      const MIN_H = 350;    // ensure comfortable default height
+      const MIN_H = 340;    // ensure comfortable default height
       const targetH = Math.max(MIN_H, Math.min(h + EXTRA_H, maxH));
       const targetW = Math.min(Math.max(MIN_W, w + EXTRA_W), maxW);
       win.setMinimumSize(MIN_W, MIN_H);

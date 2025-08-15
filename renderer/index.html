@@ -39,98 +39,96 @@
       </div>
     </aside>
 
-    <!-- RIGHT: Histogram + Trimming Parameters -->
-    <section class="right-grid">
-      <!-- Histogram panel -->
-      <div class="panel">
-        <div class="hist-header">
-          <div class="card-title">Histogram</div>
-          <button id="applyNoiseBtn" class="icon-btn apply green" title="Apply lower limit to Noise" aria-label="Apply lower limit to Noise">✓</button>
-        </div>
-        <div class="chart-wrap"><canvas id="histChart"></canvas></div>
+    <!-- Histogram panel -->
+    <div class="panel">
+      <div class="hist-header">
+        <div class="card-title">Histogram</div>
+        <button id="applyNoiseBtn" class="icon-btn apply green" title="Apply lower limit to Noise" aria-label="Apply lower limit to Noise">✓</button>
+      </div>
+      <div class="chart-wrap"><canvas id="histChart"></canvas></div>
 
-        <!-- range layout: slider on top, title+values underneath -->
-        <div class="h-range">
-          <div class="range-wrap">
-            <div class="range-base"></div>
-            <div id="rangeFill" class="range-fill"></div>
-            <input id="minDb" type="range" min="-70" max="0" step="1" value="-50" />
-            <input id="maxDb" type="range" min="-70" max="0" step="1" value="-5" />
-          </div>
-          <div class="range-row">
-            <div class="range-title">Level range (dBFS)</div>
-          </div>
+      <!-- range layout: slider on top, title+values underneath -->
+      <div class="h-range">
+        <div class="range-wrap">
+          <div class="range-base"></div>
+          <div id="rangeFill" class="range-fill"></div>
+          <input id="minDb" type="range" min="-70" max="0" step="1" value="-50" />
+          <input id="maxDb" type="range" min="-70" max="0" step="1" value="-5" />
+        </div>
+        <div class="range-row">
+          <div class="range-title">Level range (dBFS)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trimming Parameters -->
+    <div class="panel param-card" id="paramCard"> 
+      <div class="param-header">
+        <div id="paramCardTitle" class="card-title">Trimming Parameters</div>
+        <div class="param-header-actions">
+          <button id="resetParamsBtn" class="icon-btn small" title="Reset to defaults" aria-label="Reset to defaults">↻</button>
+          <button id="addPresetBtn" class="icon-btn small" title="Save current settings as a new preset" aria-label="Save preset">+</button>
+          <button id="viewPresetsBtn" class="icon-btn small" title="View presets" aria-label="View presets">☰</button>
+          <button id="paramInfoBtn" class="icon-btn small" title="Show info" aria-label="Show info">i</button>
         </div>
       </div>
 
-      <!-- Trimming Parameters -->
-      <div class="panel param-card" id="paramCard"> 
-        <div class="param-header">
-          <div id="paramCardTitle" class="card-title">Trimming Parameters</div>
-          <div class="param-header-actions">
-            <button id="resetParamsBtn" class="icon-btn small" title="Reset to defaults" aria-label="Reset to defaults">↻</button>
-            <button id="addPresetBtn" class="icon-btn small" title="Save current settings as a new preset" aria-label="Save preset">+</button>
-            <button id="viewPresetsBtn" class="icon-btn small" title="View presets" aria-label="View presets">☰</button>
-            <button id="paramInfoBtn" class="icon-btn small" title="Show info" aria-label="Show info">i</button>
+      <div class="param-front">
+        <div class="v-sliders">
+          <div class="vcol">
+            <div class="vval" id="noiseDbVal">-35.0</div>
+            <input id="noiseDb" class="vslider" type="range" />
+            <div class="vlabel">Noise<br><span class="unit">(dBFS)</span></div>
+          </div>
+          <div class="vcol">
+            <div class="vval" id="silenceSVal">0.50</div>
+            <input id="silenceS" class="vslider" type="range" />
+            <div class="vlabel">Silence<br><span class="unit">(s)</span></div>
+          </div>
+          <div class="vcol">
+            <div class="vval" id="mergeSVal">0.25</div>
+            <input id="mergeS" class="vslider" type="range" />
+            <div class="vlabel">Merge<br><span class="unit">(s)</span></div>
+          </div>
+          <div class="vcol">
+            <div class="vval" id="padSVal">0.17</div>
+            <input id="padS" class="vslider" type="range" />
+            <div class="vlabel">Pad<br><span class="unit">(s)</span></div>
+          </div>
+          <div class="vcol">
+            <div class="vval" id="keepSVal">0.75</div>
+            <input id="keepS" class="vslider" type="range" />
+            <div class="vlabel">Min clip<br><span class="unit">(s)</span></div>
           </div>
         </div>
+        <button id="startTrimBtn" class="btn primary wide">Start</button>
+      </div>
 
-        <div class="param-front">
-          <div class="v-sliders">
-            <div class="vcol">
-              <div class="vval" id="noiseDbVal">-35.0</div>
-              <input id="noiseDb" class="vslider" type="range" />
-              <div class="vlabel">Noise<br><span class="unit">(dBFS)</span></div>
-            </div>
-            <div class="vcol">
-              <div class="vval" id="silenceSVal">0.50</div>
-              <input id="silenceS" class="vslider" type="range" />
-              <div class="vlabel">Silence<br><span class="unit">(s)</span></div>
-            </div>
-            <div class="vcol">
-              <div class="vval" id="mergeSVal">0.25</div>
-              <input id="mergeS" class="vslider" type="range" />
-              <div class="vlabel">Merge<br><span class="unit">(s)</span></div>
-            </div>
-            <div class="vcol">
-              <div class="vval" id="padSVal">0.17</div>
-              <input id="padS" class="vslider" type="range" />
-              <div class="vlabel">Pad<br><span class="unit">(s)</span></div>
-            </div>
-            <div class="vcol">
-              <div class="vval" id="keepSVal">0.75</div>
-              <input id="keepS" class="vslider" type="range" />
-              <div class="vlabel">Min clip<br><span class="unit">(s)</span></div>
-            </div>
-          </div>
-          <button id="startTrimBtn" class="btn primary wide">Start</button>
-        </div>
+      <div class="param-back">
+        <ul class="legend">
+          <li><b>Noise (dBFS)</b>: Volume threshold for silence; lower keeps more audio, higher removes more.</li>
+          <li><b>Silence (s)</b>: Shortest continuous silence eligible for removal.</li>
+          <li><b>Merge (s)</b>: Combine silences split by brief sounds.</li>
+          <li><b>Pad (s)</b>: Time added before and after speech segments.</li>
+          <li><b>Min clip (s)</b>: Minimum length of any kept segment.</li>
+        </ul>
+      </div>
 
-        <div class="param-back">
-          <ul class="legend">
-            <li><b>Noise (dBFS)</b>: Threshold below which audio is treated as silence. Lower = keep more; higher = cut more.</li>
-            <li><b>Silence (s)</b>: Minimum continuous silence duration to be removed.</li>
-            <li><b>Merge (s)</b>: Merges silent sections separated by a sound shorter than this value. Useful for removing coughs or clicks.</li>
-            <li><b>Pad (s)</b>: Extra seconds kept before and after speaking segments.</li>
-            <li><b>Min clip (s)</b>: Minimum length of kept segments; shorter ones may be merged or removed.</li>
+      <div class="param-presets">
+        <ul id="presetList" class="preset-list">
           </ul>
-        </div>
-
-        <div class="param-presets">
-          <ul id="presetList" class="preset-list">
-            </ul>
-        </div>
       </div>
+    </div>
 
-      <template id="presetItemTemplate">
-        <li class="preset-item">
-          <span class="preset-title">My Preset</span>
-          <div class="preset-actions">
-            <button class="icon-btn preset-edit" title="Rename preset">✎</button>
-            <button class="icon-btn preset-delete" title="Delete preset">🗑</button>
-          </div>
-        </li>
-      </template>
+    <template id="presetItemTemplate">
+      <li class="preset-item">
+        <span class="preset-title">My Preset</span>
+        <div class="preset-actions">
+          <button class="icon-btn preset-edit" title="Rename preset">✎</button>
+          <button class="icon-btn preset-delete" title="Delete preset">🗑</button>
+        </div>
+      </li>
+    </template>
 
   <!-- Bottom status bar -->
   <div class="statusbar">
