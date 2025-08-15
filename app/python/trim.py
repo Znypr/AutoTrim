@@ -2,6 +2,7 @@
 import argparse, os, re, subprocess, sys, threading, time, math
 from typing import List, Tuple
 from collections import Counter
+from queue import Queue, Empty
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -23,7 +24,8 @@ def _positive_float(x: str) -> float:
     return f
 
 def _popen_hidden_kwargs():
-    if os.name == "nt" and (getattr(sys, "frozen", False) or getattr(sys, "stderr", None) is None):
+    # This function hides the console window on Windows.
+    if os.name == "nt":
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         CREATE_NO_WINDOW = 0x08000000
@@ -73,83 +75,82 @@ def _parse_progress_time(val: str):
 def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
                         on_progress=None, on_rms=None) -> Tuple[int, str]:
     """
-    Run ffmpeg with -progress pipe:1 and stream progress from stdout.
-    Drain stderr on a background thread and collect it (used for silencedetect).
-    Returns (returncode, collected_stderr).
+    Run ffmpeg with progress, reading stdout and stderr concurrently on threads
+    to avoid deadlocks. Explicitly sets stdin to DEVNULL to prevent hangs.
     """
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1, **_popen_hidden_kwargs()
+        cmd,
+        stdin=subprocess.DEVNULL, # This is the critical fix to prevent hanging.
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True, encoding='utf-8', errors='replace', bufsize=1, **_popen_hidden_kwargs()
     )
 
+    q_out, q_err = Queue(), Queue()
+
+    def _reader_thread(pipe, queue):
+        try:
+            for line in iter(pipe.readline, ''):
+                queue.put(line)
+        finally:
+            pipe.close()
+            queue.put(None)
+
+    threading.Thread(target=_reader_thread, args=(proc.stdout, q_out), daemon=True).start()
+    threading.Thread(target=_reader_thread, args=(proc.stderr, q_err), daemon=True).start()
+
     stderr_buf = []
+    stdout_closed = False
+    stderr_closed = False
     last_progress_time = time.time()
+    rms_pat = re.compile(r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)") if on_rms else None
 
-    # optional RMS extraction from stderr (used by analyze_levels)
-    rms_pat = re.compile(r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)") \
-              if on_rms else None
+    if on_progress:
+        try: on_progress(0.0)
+        except Exception: pass
 
-    def _stderr_reader():
-        for line in proc.stderr:
-            stderr_buf.append(line)
-            if on_rms and rms_pat:
-                m = rms_pat.search(line)
-                if m:
-                    try:
-                        on_rms(float(m.group(1)))
-                    except Exception:
-                        pass
-
-    t = threading.Thread(target=_stderr_reader, daemon=True)
-    t.start()
-
-    try:
-        if on_progress:
-            try: on_progress(0.0)
+    while not stdout_closed or not stderr_closed:
+        if CANCEL.is_set():
+            try: proc.terminate()
             except Exception: pass
+            while not q_out.empty(): q_out.get_nowait()
+            while not q_err.empty(): q_err.get_nowait()
+            raise RuntimeError("CANCELLED")
 
-        while True:
-            if CANCEL.is_set():
-                try: proc.terminate()
-                except Exception: pass
-                raise RuntimeError("CANCELLED")
+        try:
+            line_out = q_out.get_nowait()
+            if line_out is None:
+                stdout_closed = True
+            else:
+                key, val = line_out.strip().split("=", 1)
+                if key in ("out_time_ms", "out_time_us", "out_time"):
+                    tval = _parse_progress_time(val)
+                    if tval is not None and total > 0 and on_progress:
+                        frac = max(0.0, min(1.0, tval / total))
+                        on_progress(frac)
+                        last_progress_time = time.time()
+                elif key == "progress" and val == "end" and on_progress:
+                    on_progress(1.0)
+        except Empty:
+            pass
 
-            line = proc.stdout.readline()
-            if line == "" and proc.poll() is not None:
-                break
+        try:
+            line_err = q_err.get_nowait()
+            if line_err is None:
+                stderr_closed = True
+            else:
+                stderr_buf.append(line_err)
+                if on_rms and rms_pat and (m := rms_pat.search(line_err)):
+                    on_rms(float(m.group(1)))
+        except (Empty, ValueError):
+            pass
 
-            if not line:
-                # keep UI alive if stdout stalls
-                if on_progress and (time.time() - last_progress_time) > 2.0 and total > 0:
-                    try: on_progress(0.001)
-                    except Exception: pass
-                time.sleep(0.05)
-                continue
+        if q_out.empty() and q_err.empty():
+            if on_progress and (time.time() - last_progress_time) > 2.0 and total > 0 and not stdout_closed:
+                on_progress(0.001)
+            time.sleep(0.05)
 
-            line = line.strip()
-            if not line or "=" not in line:
-                continue
-
-            key, val = line.split("=", 1)
-            if key in ("out_time_ms", "out_time_us", "out_time"):
-                tval = _parse_progress_time(val)
-                if tval is not None and total > 0 and on_progress:
-                    frac = max(0.0, min(1.0, tval / total))
-                    try: on_progress(frac)
-                    except Exception: pass
-                    last_progress_time = time.time()
-
-            # stderr sometimes mirrors time=HH:MM:SS.xx; fallback parse if needed
-            if key == "progress" and val == "end" and on_progress:
-                try: on_progress(1.0)
-                except Exception: pass
-
-    finally:
-        try: proc.wait()
-        except Exception: pass
-        try: t.join(timeout=0.3)
-        except Exception: pass
-
+    proc.wait()
     return proc.returncode or 0, "".join(stderr_buf)
 
 # ---- CLI args / filenames -----------------------------------------------------
@@ -200,43 +201,78 @@ def detect_silences(input_path: str, noise: str, min_silence: float,
 
 def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
                             pad: float, keep: float) -> List[Tuple[float, float]]:
+    """
+    Identifies speaking segments by inverting silent segments, then pads, merges,
+    and filters them. This implementation is robust against edge cases.
+    """
+    # If no silence is detected, the entire video is considered speaking.
     if not starts and not ends:
-        return [(0.0, dur)]
-    if not starts or (ends and ends[0] < starts[0]):
-        starts = [0.0] + starts
-    if len(ends) < len(starts):
-        ends = ends + [dur]
+        return [(0.0, dur)] if dur >= keep else []
 
-    speaking = []
-    t = 0.0
-    for s, e in zip(starts, ends):
-        gap = s - t
-        if gap > 0.01:
-            a = max(0.0, t - pad)
-            b = min(dur, s + pad)
-            if speaking and a < speaking[-1][1]:
-                speaking[-1] = (speaking[-1][0], max(speaking[-1][1], b))
-            else:
-                speaking.append((a, b))
-        t = e
+    # Create a list of silent intervals for easy lookup.
+    silent_intervals = list(zip(starts, ends))
 
-    # final tail
-    gap = dur - t
-    if gap > 0.01:
-        a = max(0.0, t - pad)
-        if speaking and a < speaking[-1][1]:
-            speaking[-1] = (speaking[-1][0], dur)
+    # Define all event points on the timeline (start, end, and all silence boundaries).
+    points = sorted(list(set([0.0, dur] + starts + ends)))
+
+    # Identify the intervals between event points that are NOT silent.
+    speaking_intervals = []
+    for i in range(len(points) - 1):
+        start_point, end_point = points[i], points[i+1]
+
+        # Ignore tiny slivers of time that are likely artifacts.
+        if end_point - start_point < 0.01:
+            continue
+
+        # Check if this interval is silent by testing its midpoint.
+        mid_point = start_point + (end_point - start_point) / 2.0
+        is_silent = any(s_start <= mid_point < s_end for s_start, s_end in silent_intervals)
+
+        if not is_silent:
+            speaking_intervals.append((start_point, end_point))
+
+    if not speaking_intervals:
+        return []
+
+    # Pad and merge the speaking intervals.
+    padded_and_merged: List[Tuple[float, float]] = []
+    for s, e in speaking_intervals:
+        padded_s = max(0.0, s - pad)
+        padded_e = min(dur, e + pad)
+
+        if not padded_and_merged or padded_s > padded_and_merged[-1][1]:
+            # This is a new segment.
+            padded_and_merged.append((padded_s, padded_e))
         else:
-            speaking.append((a, dur))
+            # This segment overlaps with the previous one, so extend it.
+            padded_and_merged[-1] = (padded_and_merged[-1][0], max(padded_and_merged[-1][1], padded_e))
 
-    # merge overlaps and filter by keep
-    merged: List[Tuple[float, float]] = []
-    for s, e in sorted(speaking):
-        if not merged or s > merged[-1][1]:
-            merged.append((s, e))
+    # Finally, filter out any segments that are too short after padding and merging.
+    return [(s, e) for s, e in padded_and_merged if (e - s) >= keep]
+
+# In trim.py, add this new function
+
+def merge_silences(starts: List[float], ends: List[float], merge_threshold: float) -> Tuple[List[float], List[float]]:
+    """Merges silent intervals that are separated by a gap smaller than the threshold."""
+    if merge_threshold <= 0 or len(starts) < 2:
+        return starts, ends
+
+    intervals = sorted(list(zip(starts, ends)))
+    
+    merged = [intervals[0]]
+    for next_start, next_end in intervals[1:]:
+        last_start, last_end = merged[-1]
+        
+        # If the gap between the end of the last silence and the start of the next is small enough...
+        if next_start - last_end <= merge_threshold:
+            # ...merge them by extending the end time of the last interval.
+            merged[-1] = (last_start, next_end)
         else:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-    return [(s, e) for s, e in merged if (e - s) >= keep]
+            # Otherwise, the gap is too big, so start a new interval.
+            merged.append((next_start, next_end))
+    
+    new_starts, new_ends = zip(*merged)
+    return list(new_starts), list(new_ends)
 
 # ---- Cutting & concatenation (single encode) ---------------------------------
 

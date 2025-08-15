@@ -19,5 +19,7 @@ contextBridge.exposeInMainWorld('sys', {
   getSettings: () => ipcRenderer.invoke('sys:getSettings'),
   setSettings: (partial = {}) => ipcRenderer.invoke('sys:setSettings', partial),
   pathJoin: (a, b) => ipcRenderer.invoke('sys:pathJoin', a, b),
-  fsStat: (p) => ipcRenderer.invoke('sys:fsStat', p)
+  fsStat: (p) => ipcRenderer.invoke('sys:fsStat', p),
+  showInFolder: (path) => ipcRenderer.invoke('sys:showInFolder', path),
+  openFile: (path) => ipcRenderer.invoke('sys:openFile', path),
 });

@@ -14,7 +14,7 @@
   --gap: 16px;
 }
 
-.front { z-index: 3 !important; } /* raised on demand */
+.front { z-index: 3 !important; }
 
 html,
 body {
@@ -25,7 +25,6 @@ body {
   font-family: system-ui, Segoe UI, Inter, Arial;
 }
 
-/* Title bar */
 .titlebar {
   display: flex;
   align-items: center;
@@ -40,7 +39,6 @@ body {
   font-size: 18px;
 }
 
-/* Buttons */
 
 .btn.danger {
   background: #e74c3c;
@@ -72,13 +70,11 @@ body {
   width: 100%;
 }
 
-/* Layout */
 .content-grid {
   display: grid;
   grid-template-columns: var(--leftW) 1fr;
   gap: var(--gap);
-  padding: 12px; /* minimal padding around cards; status bar excluded */
-  /* leave space for statusbar */
+  padding: 12px; 
   max-width: 1260px;
   margin: 0 auto;
 }
@@ -86,7 +82,6 @@ body {
 #thumb { background-repeat: no-repeat; }
 
 
-/* LEFT column */
 .thumb-card {
   background: var(--card);
   border-radius: 16px;
@@ -98,10 +93,10 @@ body {
 }
 
 .content-grid {
-  align-items: stretch; /* make columns equal height */
+  align-items: stretch;
 }
 .thumb-card {
-  height: auto; /* let it stretch instead of fixed var(--panelH) */
+  height: auto; 
 }
 
 .thumb {
@@ -132,7 +127,6 @@ body {
   color: var(--muted);
 }
 
-/* Center video stats text inside the left thumbnail panel */
 .thumb-card .file-meta { text-align: center; }
 
 .import-progress {
@@ -148,7 +142,6 @@ body {
   background: var(--accent);
 }
 
-/* RIGHT column = Histogram (fixed width) + Trim params (fixed width) */
 .right-grid {
   display: grid;
   grid-template-columns: var(--histW) var(--paramW);
@@ -183,16 +176,14 @@ body {
 }
 .icon-btn.apply.green:hover { filter: brightness(1.05); }
 
-/* Histogram chart */
 .chart-wrap { height: 200px; }
 
-/* Range below chart */
 .h-range {
   display: grid;
   grid-template-rows: 1fr auto;
   gap: 6px;
-  margin-top: 12px;   /* more distance from histogram to slider */
-  margin-bottom: 0;   /* tighter spacing under title+values */
+  margin-top: 12px;   
+  margin-bottom: 0;  
 }
 .h-range .range-row { display: flex; align-items: center; justify-content: center; }
 .h-range .range-title { font-size: 12px; color: var(--muted); text-align: center; }
@@ -238,14 +229,13 @@ body {
 .range-fill {
   position: absolute;
   height: 6px;
-  background: rgba(29,185,84,.18); /* match histogram area fill */
+  background: rgba(29,185,84,.18); 
   border-radius: 999px;
   left: 0;
   width: 0;
   pointer-events: none;
 }
 
-/* Non-interactive base track behind the double slider */
 .range-base {
   position: absolute;
   left: 0;
@@ -256,7 +246,6 @@ body {
   pointer-events: none;
 }
 
-/* Trimming Parameters: evenly spaced vertical sliders */
 
 .param-card {
   display: flex;
@@ -285,17 +274,27 @@ body {
   color: var(--muted);
 }
 
+.param-header-actions {
+  display: flex;
+  gap: 4px;
+}
+
 .param-card.show-info .param-front { display: none; }
 .param-card.show-info .param-back { display: block; }
 
 .legend {
-  margin: 15px 0 0; /* roughly aligns where sliders begin under header */
+  margin: 15px 0 0; 
   padding-left: 18px;
 }
 .legend li { margin: 6px 0; }
 
-/* Keep Start button pinned to bottom; pull sliders up under header */
 #startTrimBtn { margin-top: auto; }
+
+#startTrimBtn.danger {
+  background-color: #CD5C5C;
+  border-color: #CD5C5C;
+  color: #ffffff; 
+}
 
 .v-sliders {
   display: flex;
@@ -352,7 +351,6 @@ body {
   cursor: pointer;
 }
 
-/* Status bar */
 .statusbar {
   position: fixed;
   left: 0;
@@ -375,23 +373,20 @@ body {
 .statusbar progress {
   -webkit-appearance: none; 
   appearance: none;
-  width: 256px; /* 20% shorter than 320px */
+  width: 256px;
   height: 10px;
   border: none;
   border-radius: 999px;
   overflow: hidden;
   background-color: #222; 
 }
-/* make track exactly #222 */
 .statusbar progress::-webkit-progress-bar { background-color: #222; }
 
-/* make fill exactly var(--accent) */
 .statusbar progress::-webkit-progress-value {
   background-color: var(--accent);
   background-image: none;
 }
 
-/* Firefox fill */
 .statusbar progress::-moz-progress-bar {
   background-color: var(--accent);
   background-image: none;
@@ -407,3 +402,110 @@ body {
   padding: 4px 6px;
 }
 .icon-btn:hover { color: var(--txt); }
+
+
+#postActions {
+  display: flex;     
+  gap: 8px;           
+}
+
+#postActions .btn {
+  flex: 1;           
+  padding: 6px 10px; 
+  font-size: 13px;   
+  transition: all 0.2s ease; 
+}
+
+#postActions .btn:disabled {
+  background-color: #2a2a2a;
+  color: #666;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+#postActions .btn.active {
+  background-color: var(--accent); 
+  color: #000;                   
+  opacity: 1;
+}
+
+#postActions .btn.active:hover {
+  filter: brightness(1.1); 
+}
+
+
+
+/* In index.css */
+
+/* --- Updated Panel Flipping Logic --- */
+
+/* By default, hide the legend and presets panels */
+.param-back,
+.param-presets {
+  display: none;
+}
+
+/* When showing info, hide front and presets, show back */
+.param-card.show-info .param-front,
+.param-card.show-info .param-presets {
+  display: none;
+}
+.param-card.show-info .param-back {
+  display: flex;
+}
+
+/* When showing presets, hide front and back, show presets */
+.param-card.show-presets .param-front,
+.param-card.show-presets .param-back {
+  display: none;
+}
+.param-card.show-presets .param-presets {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+}
+
+
+/* --- New Preset Panel Styles --- */
+
+.preset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto; /* Add scroll if list is long */
+}
+
+.preset-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 4px;
+  border-bottom: 1px solid #282828;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.preset-item:hover {
+  background-color: #222;
+}
+
+.preset-item:last-child {
+  border-bottom: none;
+}
+
+.preset-title {
+  font-weight: 600;
+}
+
+.preset-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.preset-actions .icon-btn {
+  font-size: 16px;
+}
+
+.preset-delete:hover {
+  color: #e74c3c; /* Red hover for delete */
+}

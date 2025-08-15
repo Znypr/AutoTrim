@@ -1,5 +1,6 @@
 // --- add near the top with other requires ---
-const { app, BrowserWindow, Menu, globalShortcut, ipcMain, dialog, screen } = require('electron');
+const { app, BrowserWindow, Menu, globalShortcut, ipcMain, dialog, screen, shell } = require('electron');
+
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -123,6 +124,15 @@ function createWindow() {
     });
   }
 }
+
+ipcMain.handle('sys:showInFolder', (_evt, path) => {
+  if (path) shell.showItemInFolder(path);
+});
+
+ipcMain.handle('sys:openFile', (_evt, path) => {
+  if (path) shell.openPath(path);
+});
+
 
 // keep your temp writer
 ipcMain.handle('py:saveTemp', async (_evt, { arrayBuffer, ext = 'mp4' }) => {
