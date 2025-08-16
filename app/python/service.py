@@ -12,6 +12,7 @@ PARAM_CONFIG = {
     "keep":     {"min": 0.1,   "max": 1.0,   "step": 0.05, "default": 0.50},
 }
 
+CREATE_NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 JOBS = {}  # job_id -> {"cancel": threading.Event(), "thread": Thread}
 
 def cleanup_old_partials():
@@ -38,7 +39,7 @@ def cleanup_old_partials():
 
 def _has_nvenc():
     try:
-        out = subprocess.check_output(["ffmpeg","-hide_banner","-encoders"], text=True)
+        out = subprocess.check_output(["ffmpeg","-hide_banner","-encoders"], text=True, creationflags=CREATE_NO_WINDOW)
         return "h264_nvenc" in out
     except Exception:
         return False
@@ -175,7 +176,7 @@ def cmd_trim(payload):
                     out = subprocess.check_output([
                         "ffprobe","-v","error","-select_streams","a:0",
                         "-show_entries","stream=index","-of","csv=p=0", p
-                    ], text=True)
+                    ], text=True, creationflags=CREATE_NO_WINDOW)
                     return bool(out.strip())
                 except Exception:
                     return True
@@ -312,7 +313,7 @@ def cmd_thumb(payload):
             "ffmpeg","-hide_banner","-nostats","-y",
             "-ss","0","-i", path,
             "-frames:v","1","-f","mjpeg","pipe:1"
-        ], stderr=subprocess.DEVNULL)
+        ], stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
         b64 = base64.b64encode(img).decode("ascii")
         return {"ok": True, "dataUrl": f"data:image/jpeg;base64,{b64}"}
     except Exception as e:
