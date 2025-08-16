@@ -1,30 +1,30 @@
-# Trim Silence from Video
+# AutoTrim
 
-A Python tool to automatically remove low-volume pauses from a video using FFmpeg, producing a clean, concise version without altering quality.
+A standalone desktop app to automatically remove silent parts from videos. No installation required—just download and run.
 
-## Features
-- Detects and trims silence based on a user-defined noise threshold.
-- Adjustable parameters: silence threshold, min silence length, padding, and min clip keep length.
-- Lossless cutting using FFmpeg (no re-encoding).
-- Optional audio loudness histogram generation.
-- Progress bar for detection, processing, and rendering steps.
-- Windows taskbar progress indicator when the window is minimized.
+---
+## ## Features
 
-## Requirements
-- Python 3.8+
-- FFmpeg installed and available in PATH
-- Python packages:
-  - matplotlib (only if using `--hist`)
+* **Interactive Audio Histogram**
+    Instantly see your video's audio loudness distribution. Click and drag on the chart to visually set the noise floor—any sound below this level is considered silence.
 
-## Installation
-pip install matplotlib  # optional, only for histogram support
+* **Fine-Tuning Sliders**
+    Precisely control the trimming process with four key parameters: **Noise** threshold, **Silence** duration, **Padding**, and minimum **Clip** length.
 
-## Usage
-Basic example:
-python trim_silence.py input.mp4 --noise=-21dB --silence=0.2 --pad=0.125 --keep=1.25
+* **Parameter Presets**
+    Save your favorite slider settings as a named preset. Quickly load them later for a consistent editing style across multiple videos.
 
-With histogram:
-python trim_silence.py input.mp4 --noise=-21dB --silence=0.2 --pad=0.125 --keep=1.25 --hist --bins=3 --min_db=-40 --max_db=0
+* **Real-Time Progress**
+    A detailed progress bar keeps you updated on the status of your trim job, from initial analysis and silence detection to final rendering.
 
-## License
-MIT License
+* **Hardware Acceleration**
+    Automatically uses NVIDIA (NVENC) hardware acceleration for encoding if available, resulting in significantly faster processing times.
+
+---
+## ## How to Use
+
+1.  Download the application for your operating system.
+2.  Unzip the file and run the **AutoTrim** executable.
+3.  Click **Select video...** to load a file.
+4.  Use the histogram and sliders to adjust the trimming parameters.
+5.  Click **Start** to begin processing. Your new video will be saved in your **Downloads** folder.
