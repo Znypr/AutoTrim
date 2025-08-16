@@ -81,6 +81,43 @@ body {
   align-items: stretch;
 }
 
+.thumb-card .file-meta {
+  display: flex;
+
+  justify-content: center; 
+  align-items: center;
+  gap: 8px;
+}
+
+
+.thumb-card .file-meta:has(.meta-stats:not(:empty)) {
+  justify-content: space-between;
+}
+
+.meta-title {
+  min-width: 0;
+  text-align: left;
+}
+
+
+.thumb-card .file-meta:has(.meta-stats:not(:empty)) .meta-title {
+  flex: 1;
+}
+
+.meta-stats {
+  flex-shrink: 0; 
+  position: relative;
+  padding-left: 12px;
+}
+
+
+.meta-stats:not(:empty)::before {
+  content: '|';
+  position: absolute;
+  left: 0;
+  color: var(--muted);
+  opacity: 0.6;
+}
 
 .thumb-card {
   background: var(--card);
@@ -91,6 +128,10 @@ body {
   flex-direction: column;
   gap: 10px;
   align-self: stretch;
+}
+
+.stats-sep {
+  opacity: 0.6;
 }
 
 .thumb {
@@ -414,7 +455,8 @@ body {
 
 #postActions {
   display: flex;     
-  gap: 8px;           
+  gap: 8px;
+  align-items: center;
 }
 
 #postActions .btn {
@@ -442,6 +484,38 @@ body {
 }
 
 
+#toggleViewBtn {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #444;
+  background-color: #2a2a2a;
+  font-size: 18px;
+  line-height: 32px;
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+#toggleViewBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--txt);
+}
+
+#toggleViewBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: #444;
+  background-color: #2a2a2a;
+  color: #666;
+}
+
+#toggleViewBtn.active {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+}
 
 .param-back,
 .param-presets {

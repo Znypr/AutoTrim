@@ -20,6 +20,7 @@ const state = {
   defaultInputDir: null,
   defaultOutputDir: null,
   presets: [],
+  currentView: 'raw', // 'raw' or 'cut'
 };
 
 // --- DOM Element Constants ---
@@ -30,6 +31,7 @@ const DOMElements = {
   outBtn: $("#outBtn"),
   showBtn: $("#showBtn"),
   playBtn: $("#playBtn"),
+  toggleViewBtn: $("#toggleViewBtn"),
   inputDirBtn: $("#inputDirBtn"),
   outputDirBtn: $("#outputDirBtn"),
   addPresetBtn: $("#addPresetBtn"),
@@ -229,34 +231,28 @@ function setStartBtnCancelling() {
 }
 
 /**
- * Activates the 'Show' and 'Play' buttons after a successful render.
+ * Activates post-render actions and switches view to the output file.
  */
 function showPostRenderActions(path) {
   state.outputPath = path;
-  const { showBtn, playBtn } = DOMElements;
-  if (!showBtn || !playBtn) return;
+  const { toggleViewBtn } = DOMElements;
+  if (!toggleViewBtn) return;
 
-  [showBtn, playBtn].forEach((btn) => {
-    btn.disabled = false;
-    btn.classList.add("active");
-  });
-
-  showBtn.onclick = async () => {
-    const r = await window.sys.showInFolder(state.outputPath);
-    if (!r?.ok) console.error("Show in folder failed:", r?.error);
-  };
-  playBtn.onclick = async () => {
-    const r = await window.sys.openFile(state.outputPath);
-    if (!r?.ok) console.error("Open file failed:", r?.error);
-  };
+  toggleViewBtn.disabled = false;
+  
+  // Automatically switch to show the new "cut" video info
+  state.currentView = 'cut';
+  toggleViewBtn.classList.add('active');
+  toggleViewBtn.title = 'Switch to Raw video';
+  displayFileInformation(state.outputPath);
 }
 
 
 /**
- * Resets and disables the 'Show' and 'Play' buttons.
+ * Resets and disables all post-render actions.
  */
 function resetPostRenderActions() {
-  const { showBtn, playBtn } = DOMElements;
+  const { showBtn, playBtn, toggleViewBtn } = DOMElements;
   if (!showBtn || !playBtn) return;
 
   [showBtn, playBtn].forEach((btn) => {
@@ -264,6 +260,11 @@ function resetPostRenderActions() {
     btn.classList.remove("active");
     btn.onclick = null;
   });
+
+  if (toggleViewBtn) {
+    toggleViewBtn.disabled = true;
+    toggleViewBtn.classList.remove("active");
+  }
 }
 
 /**
@@ -301,56 +302,77 @@ function showParamView(viewName) {
 // =============================================================================
 
 /**
- * Main function to handle a newly selected file.
+ * Universal function to display info (thumb, meta, buttons) for a given file path.
  */
-async function handleFileSelection(backendPath, fileName) {
-  resetPostRenderActions();
-  state.filePath = backendPath;
-  state.outputPath = null;
-  updateSuggestedName();
+async function displayFileInformation(filePath) {
+  const { thumb, meta, showBtn, playBtn } = DOMElements;
 
-  const base = fileName.split(/[/\\]/).pop() || "video.mp4";
+  const metaTitle = meta.querySelector('.meta-title');
+  const metaStats = meta.querySelector('.meta-stats');
+
+  thumb.classList.add("skeleton");
+  thumb.style.setProperty("--thumb-url", 'none');
+  if (metaTitle) metaTitle.textContent = "Loading info...";
+  if (metaStats) metaStats.textContent = "";
+
+  const base = filePath.split(/[/\\]/).pop() || "video.mp4";
   let durText = "—:—";
   let sizeText = "— MB";
 
   try {
-    const pr = await window.py.send("probe", { path: state.filePath });
+    const pr = await window.py.send("probe", { path: filePath });
     if (pr?.ok && Number.isFinite(pr.duration)) durText = formatDuration(pr.duration);
   } catch {}
 
   try {
-    const st = await window.sys?.fsStat?.(state.filePath);
-    if (st?.ok && typeof st.size === "number") sizeText = `${(st.size / 1024 / 1024).toFixed(1)} MB`;
+    const st = await window.sys?.fsStat?.(filePath);
+    if (st?.ok && typeof st.size === "number") sizeText = formatSize(st.size);
   } catch {}
 
-  if (DOMElements.meta) DOMElements.meta.textContent = `${base} • ${durText} • ${sizeText}`;
+  if (metaTitle && metaStats) {
+    // This logic ensures the extension is always visible
+    const MAX_NAME_LENGTH = 26; // The maximum characters for the filename part
+    const extIndex = base.lastIndexOf('.');
+    
+    const hasExtension = extIndex > 0 && base.length - extIndex <= 5;
 
-  // Enable actions for the INPUT file right away
-  const { showBtn, playBtn } = DOMElements;
+    let name = hasExtension ? base.substring(0, extIndex) : base;
+    const ext = hasExtension ? base.substring(extIndex) : '';
+
+    if (name.length > MAX_NAME_LENGTH) {
+      name = name.substring(0, MAX_NAME_LENGTH) + '..';
+    }
+
+    metaTitle.textContent = name + ext;
+
+    // Keep the full original name for the hover tooltip
+    metaTitle.title = base; 
+    metaStats.innerHTML = `${durText} <span class="stats-sep">|</span> ${sizeText}`;
+  } else { 
+    meta.innerHTML = `${base} <span class="stats-sep">|</span> ${durText} <span class="stats-sep">|</span> ${sizeText}`;
+  }
+
+
   if (showBtn && playBtn) {
     showBtn.disabled = false;
     playBtn.disabled = false;
     showBtn.classList.add('active');
     playBtn.classList.add('active');
-
     showBtn.onclick = async () => {
-      const r = await window.sys.showInFolder(state.filePath);
-      if (!r?.ok) console.error('showInFolder (input) failed:', r?.error);
+      const r = await window.sys.showInFolder(filePath);
+      if (!r?.ok) console.error(`showInFolder failed for ${filePath}:`, r?.error);
     };
     playBtn.onclick = async () => {
-      const r = await window.sys.openFile(state.filePath);
-      if (!r?.ok) console.error('openFile (input) failed:', r?.error);
+      const r = await window.sys.openFile(filePath);
+      if (!r?.ok) console.error(`openFile failed for ${filePath}:`, r?.error);
     };
   }
 
-
   try {
-    const th = await window.py.send("thumb", { path: state.filePath });
+    const th = await window.py.send("thumb", { path: filePath });
     if (th?.ok && th.dataUrl) {
-      const thumb = DOMElements.thumb;
       thumb.classList.remove("skeleton");
       thumb.style.setProperty("--thumb-url", `url(${th.dataUrl})`);
-
       const img = new Image();
       img.onload = () => {
         const isPortrait = img.naturalHeight > img.naturalWidth;
@@ -359,6 +381,19 @@ async function handleFileSelection(backendPath, fileName) {
       img.src = th.dataUrl;
     }
   } catch {}
+}
+
+/**
+ * Main function to handle a newly selected file.
+ */
+async function handleFileSelection(backendPath, fileName) {
+  resetPostRenderActions();
+  state.filePath = backendPath;
+  state.outputPath = null;
+  state.currentView = 'raw';
+  updateSuggestedName();
+
+  await displayFileInformation(state.filePath);
 
   startAnalysisJob(state.filePath);
 }
@@ -668,13 +703,34 @@ function makeSliderValueEditable(valueId, inputSelector, parse) {
 // H. UTILITY FUNCTIONS
 // =============================================================================
 
+function formatSize(bytes) {
+  if (!bytes || bytes < 0) return "0 MB";
+  const mb = bytes / 1024 / 1024;
+
+  if (mb < 100) {
+    // For sizes under 100 MB, show up to 3 significant digits (e.g., 9.8 MB, 98.7 MB)
+    return `${mb.toPrecision(3)} MB`;
+  }
+  if (mb < 1000) {
+    // For sizes in the hundreds, show no decimal (e.g., 783 MB)
+    return `${Math.round(mb)} MB`;
+  }
+  // For sizes 1000 MB and up, show in GB with 3 significant digits (e.g., 1.02 GB, 12.3 GB)
+  const gb = mb / 1024;
+  return `${gb.toPrecision(3)} GB`;
+}
+
 function formatDuration(totalSeconds) {
   const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
   const two = (n) => String(n).padStart(2, "0");
-  return h > 0 ? `${h}:${two(m)}:${two(sec)}` : `${m}:${two(sec)}`;
+  
+  if (h > 0) {
+    return `${h}h${two(m)}m${two(sec)}s`;
+  }
+  return `${m}m${two(sec)}s`;
 }
 
 /**
@@ -742,12 +798,26 @@ function firstFrameURL(file, t = 0) {
 // =============================================================================
 
 function wireEventListeners() {
-  const { minDbRange, maxDbRange, rangeWrap } = DOMElements;
+  const { minDbRange, maxDbRange, rangeWrap, toggleViewBtn } = DOMElements;
   // --- Main Actions ---
   DOMElements.startTrimBtn?.addEventListener("click", handleStartTrimClick);
   DOMElements.pickBtn?.addEventListener("click", handlePickFileClick);
   DOMElements.fileInput?.addEventListener("change", handleFileInputChange);
   DOMElements.outBtn?.addEventListener("click", handleOutFileClick);
+  toggleViewBtn?.addEventListener('click', () => {
+    if (!state.outputPath) return;
+    state.currentView = (state.currentView === 'raw') ? 'cut' : 'raw';
+    if (state.currentView === 'raw') {
+      toggleViewBtn.classList.remove('active');
+      toggleViewBtn.title = 'Switch to Trimmed video';
+      displayFileInformation(state.filePath);
+    } else {
+      toggleViewBtn.classList.add('active');
+      toggleViewBtn.title = 'Switch to Raw video';
+      displayFileInformation(state.outputPath);
+    }
+  });
+
 
   // --- Input/Output Directory Selection ---
   DOMElements.inputDirBtn?.addEventListener('click', async () => {

@@ -26,7 +26,10 @@
   <div class="content-grid">
     <aside class="thumb-card">
       <div id="thumb" class="thumb skeleton"></div>
-      <div id="meta" class="file-meta">No file selected.</div>
+      <div id="meta" class="file-meta">
+        <span class="meta-title" title="No file selected.">No file selected.</span>
+        <span class="meta-stats"></span>
+      </div>
 
       <button id="pickBtn" class="btn primary wide">Select video…</button>
       <input id="fileInput" type="file" accept="video/*" style="display:none" />
@@ -34,6 +37,7 @@
       <div id="postActions">
         <button id="showBtn" class="btn" disabled>Show in Folder</button>
         <button id="playBtn" class="btn" disabled>Play File</button>
+        <button id="toggleViewBtn" class="icon-btn" disabled title="Switch between raw and trimmed video">⇆</button>
       </div>
     </aside>
 
