@@ -86,11 +86,6 @@
             <div class="vlabel">Silence<br><span class="unit">(s)</span></div>
           </div>
           <div class="vcol">
-            <div class="vval" id="mergeSVal">0.25</div>
-            <input id="mergeS" class="vslider" type="range" />
-            <div class="vlabel">Merge<br><span class="unit">(s)</span></div>
-          </div>
-          <div class="vcol">
             <div class="vval" id="padSVal">0.17</div>
             <input id="padS" class="vslider" type="range" />
             <div class="vlabel">Pad<br><span class="unit">(s)</span></div>
@@ -108,7 +103,6 @@
         <ul class="legend">
           <li><b>Noise (dBFS)</b>: Volume threshold for silence; lower keeps more audio, higher removes more.</li>
           <li><b>Silence (s)</b>: Shortest continuous silence eligible for removal.</li>
-          <li><b>Merge (s)</b>: Combine silences split by brief sounds.</li>
           <li><b>Pad (s)</b>: Time added before and after speech segments.</li>
           <li><b>Min clip (s)</b>: Minimum length of any kept segment.</li>
         </ul>

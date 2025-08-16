@@ -12,7 +12,6 @@ from matplotlib.ticker import PercentFormatter
 
 CANCEL = threading.Event()
 
-# Matches "time=HH:MM:SS.xx" seen on stderr when -progress isn't present
 STDERR_TIME_RE = re.compile(r'time=(\d{2}):(\d{2}):(\d{2})[.,](\d{2})')
 
 # ---- Small utilities ---------------------------------------------------------
@@ -24,7 +23,6 @@ def _positive_float(x: str) -> float:
     return f
 
 def _popen_hidden_kwargs():
-    # This function hides the console window on Windows.
     if os.name == "nt":
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -58,14 +56,11 @@ def _parse_progress_time(val: str):
     v = val.strip()
     if v == "N/A":
         return None
-    # out_time_ms / out_time_us: integer microseconds
     try:
-        # if pure number treat as microseconds
         if v.isdigit():
             return float(v) / 1_000_000.0
     except Exception:
         pass
-    # out_time=HH:MM:SS.sss
     try:
         hh, mm, ss = v.split(":")
         return int(hh) * 3600 + int(mm) * 60 + float(ss)
@@ -80,7 +75,7 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
     """
     proc = subprocess.Popen(
         cmd,
-        stdin=subprocess.DEVNULL, # This is the critical fix to prevent hanging.
+        stdin=subprocess.DEVNULL, 
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True, encoding='utf-8', errors='replace', bufsize=1, **_popen_hidden_kwargs()
@@ -202,29 +197,23 @@ def detect_silences(input_path: str, noise: str, min_silence: float,
 def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
                             pad: float, keep: float) -> List[Tuple[float, float]]:
     """
-    Identifies speaking segments by inverting silent segments, then pads, merges,
+    Identifies speaking segments by inverting silent segments, then pads,
     and filters them. This implementation is robust against edge cases.
     """
-    # If no silence is detected, the entire video is considered speaking.
     if not starts and not ends:
         return [(0.0, dur)] if dur >= keep else []
 
-    # Create a list of silent intervals for easy lookup.
     silent_intervals = list(zip(starts, ends))
 
-    # Define all event points on the timeline (start, end, and all silence boundaries).
     points = sorted(list(set([0.0, dur] + starts + ends)))
 
-    # Identify the intervals between event points that are NOT silent.
     speaking_intervals = []
     for i in range(len(points) - 1):
         start_point, end_point = points[i], points[i+1]
 
-        # Ignore tiny slivers of time that are likely artifacts.
         if end_point - start_point < 0.01:
             continue
 
-        # Check if this interval is silent by testing its midpoint.
         mid_point = start_point + (end_point - start_point) / 2.0
         is_silent = any(s_start <= mid_point < s_end for s_start, s_end in silent_intervals)
 
@@ -234,45 +223,19 @@ def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
     if not speaking_intervals:
         return []
 
-    # Pad and merge the speaking intervals.
-    padded_and_merged: List[Tuple[float, float]] = []
+    padded: List[Tuple[float, float]] = []
     for s, e in speaking_intervals:
         padded_s = max(0.0, s - pad)
         padded_e = min(dur, e + pad)
 
-        if not padded_and_merged or padded_s > padded_and_merged[-1][1]:
-            # This is a new segment.
-            padded_and_merged.append((padded_s, padded_e))
+        if not padded or padded_s > padded[-1][1]:
+            padded.append((padded_s, padded_e))
         else:
-            # This segment overlaps with the previous one, so extend it.
-            padded_and_merged[-1] = (padded_and_merged[-1][0], max(padded_and_merged[-1][1], padded_e))
+            padded[-1] = (padded[-1][0], max(padded[-1][1], padded_e))
 
-    # Finally, filter out any segments that are too short after padding and merging.
-    return [(s, e) for s, e in padded_and_merged if (e - s) >= keep]
+    return [(s, e) for s, e in padded if (e - s) >= keep]
 
-# In trim.py, add this new function
 
-def merge_silences(starts: List[float], ends: List[float], merge_threshold: float) -> Tuple[List[float], List[float]]:
-    """Merges silent intervals that are separated by a gap smaller than the threshold."""
-    if merge_threshold <= 0 or len(starts) < 2:
-        return starts, ends
-
-    intervals = sorted(list(zip(starts, ends)))
-    
-    merged = [intervals[0]]
-    for next_start, next_end in intervals[1:]:
-        last_start, last_end = merged[-1]
-        
-        # If the gap between the end of the last silence and the start of the next is small enough...
-        if next_start - last_end <= merge_threshold:
-            # ...merge them by extending the end time of the last interval.
-            merged[-1] = (last_start, next_end)
-        else:
-            # Otherwise, the gap is too big, so start a new interval.
-            merged.append((next_start, next_end))
-    
-    new_starts, new_ends = zip(*merged)
-    return list(new_starts), list(new_ends)
 
 # ---- Cutting & concatenation (single encode) ---------------------------------
 
@@ -424,7 +387,6 @@ def main():
     except RuntimeError as e:
         print(e)
 
-    # Extra: quick summary in CLI usage
     starts, ends, _ = detect_silences(a.input, a.noise, a.silence, dur)
     segments = build_speaking_segments(starts, ends, dur, a.pad, a.keep)
     if not segments:

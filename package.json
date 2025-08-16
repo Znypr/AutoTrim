@@ -1,7 +1,9 @@
 {
   "name": "autotrim",
   "version": "0.1.0",
+  "description": "An application to automatically trim silence from videos.",
   "main": "main.js",
+  "author": "Znypr",
   "private": true,
   "scripts": {
     "start": "electron .",
@@ -32,6 +34,9 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "AutoTrim.${ext}"
     }
   }
 }

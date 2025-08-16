@@ -66,7 +66,6 @@ const paramMap = {
   silence: { slider: "#silenceS" },
   pad: { slider: "#padS" },
   keep: { slider: "#keepS" },
-  merge_silence: { slider: "#mergeS" },
 };
 
 // =============================================================================
@@ -364,11 +363,10 @@ function updateSuggestedName() {
   const vals = getCurrentSliderValues();
   const nVal = Math.abs(parseInt(vals.noise_db));
   const sVal = parseInt(vals.silence * 100);
-  const mVal = parseInt(vals.merge_silence * 100);
   const pVal = parseInt(vals.pad * 100);
   const kVal = parseInt(vals.keep * 100);
 
-  state.suggestedName = `${baseNameNoExt}-N${nVal}-S${sVal}-M${mVal}-P${pVal}-C${kVal}.mp4`;
+  state.suggestedName = `${baseNameNoExt}-N${nVal}-S${sVal}-P${pVal}-C${kVal}.mp4`;
   if (DOMElements.outMeta) DOMElements.outMeta.textContent = `Output: ${state.suggestedName}`;
 }
 
@@ -781,14 +779,12 @@ function wireEventListeners() {
   });
   bindVal("#noiseDb", (v) => Number(v).toFixed(1));
   bindVal("#silenceS", (v) => Number(v).toFixed(2));
-  bindVal("#mergeS", (v) => Number(v).toFixed(2));
   bindVal("#padS", (v) => Number(v).toFixed(2));
   bindVal("#keepS", (v) => Number(v).toFixed(2));
   makeSliderValueEditable("#noiseDbVal", "#noiseDb", Number);
   makeSliderValueEditable("#silenceSVal", "#silenceS", Number);
   makeSliderValueEditable("#padSVal", "#padS", Number);
   makeSliderValueEditable("#keepSVal", "#keepS", Number);
-  makeSliderValueEditable("#mergeSVal", "#mergeS", Number);
 
   // --- dB Range Sliders ---
   [minDbRange, maxDbRange].forEach((inp) => {

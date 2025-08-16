@@ -8,7 +8,6 @@ import collections, math
 PARAM_CONFIG = {
     "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -35.0},
     "silence":  {"min": 0.1,   "max": 1.0,   "step": 0.1, "default": 0.1},
-    "merge_silence": {"min": 0.0, "max": 1.0, "step": 0.05, "default": 0.15},
     "pad":      {"min": 0.0,   "max": 1.0,   "step": 0.01,"default": 0.12},
     "keep":     {"min": 0.1,   "max": 1.0,   "step": 0.05, "default": 0.50},
 }
@@ -85,7 +84,6 @@ def cmd_trim(payload):
     silence       = float(payload.get("silence",  PARAM_CONFIG["silence"]["default"]))
     pad           = float(payload.get("pad",      PARAM_CONFIG["pad"]["default"]))
     keep          = float(payload.get("keep",     PARAM_CONFIG["keep"]["default"]))
-    merge_silence = float(payload.get("merge_silence", PARAM_CONFIG["merge_silence"]["default"]))
     path          = payload["path"]
 
     # Validate input file exists and is accessible
@@ -125,12 +123,11 @@ def cmd_trim(payload):
         # Format parameter values for the filename
         n_val = abs(int(noise))
         s_val = int(silence * 100)
-        m_val = int(merge_silence * 100)
         p_val = int(pad * 100)
         k_val = int(keep * 100)
 
         # Construct the new filename (using 'C' for 'keep' as per the example)
-        new_filename = f"{base_name}-N{n_val}-S{s_val}-M{m_val}-P{p_val}-C{k_val}.mp4"
+        new_filename = f"{base_name}-N{n_val}-S{s_val}-P{p_val}-C{k_val}.mp4"
 
         out = os.path.join(os.path.expanduser("~"), "Downloads", new_filename)
 
@@ -176,8 +173,6 @@ def cmd_trim(payload):
             
             starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+\.?\d*)", txt)]
             ends   = [float(x) for x in re.findall(r"silence_end:\s*(\d+\.?\d*)",   txt)]
-            
-            starts, ends = trim.merge_silences(starts, ends, merge_silence)
             
             if not starts and not ends:
                 starts, ends = [], [dur]
