@@ -133,12 +133,24 @@ function createWindow() {
   }
 }
 
-ipcMain.handle('sys:showInFolder', (_evt, path) => {
-  if (path) shell.showItemInFolder(path);
+ipcMain.handle('sys:showInFolder', (_evt, p) => {
+  try {
+    if (!p) return { ok: false, error: 'No path' };
+    shell.showItemInFolder(p);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
 });
 
-ipcMain.handle('sys:openFile', (_evt, path) => {
-  if (path) shell.openPath(path);
+ipcMain.handle('sys:openFile', async (_evt, p) => {
+  try {
+    if (!p) return { ok: false, error: 'No path' };
+    const res = await shell.openPath(p); // empty string on success
+    return res ? { ok: false, error: res } : { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
 });
 
 

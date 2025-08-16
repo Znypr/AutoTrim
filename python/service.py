@@ -196,10 +196,15 @@ def cmd_trim(payload):
             send("progress", stage="render", value=0.01)
 
             tmp_out = out + ".partial.mp4"
-            try:
-                if os.path.exists(tmp_out):
-                    os.remove(tmp_out)
-            except Exception: pass
+
+            if os.path.exists(tmp_out):
+                try:
+                    os.replace(tmp_out, out)
+                except Exception as e:
+                    send("job", id=job_id, status="error", error=f"Failed to finalize output: {e}", kind="trim")
+                    return
+
+            send("job", id=job_id, status="finished", ok=True, kind="trim", output=out)
 
             use_nvenc = _has_nvenc()
             vcodec_args = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"] if use_nvenc else \

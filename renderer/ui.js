@@ -127,30 +127,31 @@ function handleJobStatusUpdate(msg) {
     case "started":
       state.jobId = msg.id;
       setStartBtnActive();
-      resetPostRenderActions();
-      if (msg.kind === "trim") setStatus("Detecting silences…");
-      if (msg.kind === "analyze") setStatus("Analyzing histogram…");
+      if (msg.kind === "trim") {
+        resetPostRenderActions();
+        setStatus("Detecting silences…");
+      } else if (msg.kind === "analyze") {
+        setStatus("Analyzing histogram…");
+      }
       setProgress(0.01);
       break;
 
-    case "finished":
-      if (msg.kind === "trim" && msg.ok) {
-        setStatus("Done.");
-        showPostRenderActions(msg.output);
-      }
-      state.jobId = null;
-      state.cancelling = false;
-      setStartBtnIdle();
-      setProgress(0);
-      if (window.__prog) window.__prog.pending = null;
-      break;
-
+      case "finished":
+        if (msg.kind === "trim" && msg.ok) {
+          setStatus("Done.");
+          showPostRenderActions(msg.output); // only enable after trim
+        }
+        state.jobId = null;
+        state.cancelling = false;
+        setStartBtnIdle();
+        setProgress(0);
+        if (window.__prog) window.__prog.pending = null;
+        break;
+        
     case "cancelled":
     case "error":
       setStatus(msg.status === "cancelled" ? "Cancelled." : `Error: ${msg.error || "Failed."}`);
-      if (msg.status === "error") {
-        console.error(`${msg.kind || "Job"} error:`, msg.error);
-      }
+      if (msg.status === "error") console.error(`${msg.kind || "Job"} error:`, msg.error);
       state.jobId = null;
       state.cancelling = false;
       setStartBtnIdle();
@@ -160,6 +161,7 @@ function handleJobStatusUpdate(msg) {
       break;
   }
 }
+
 
 /**
  * Starts the backend histogram analysis job.
@@ -228,9 +230,16 @@ function showPostRenderActions(path) {
     btn.classList.add("active");
   });
 
-  showBtn.onclick = () => window.sys.showInFolder(state.outputPath);
-  playBtn.onclick = () => window.sys.openFile(state.outputPath);
+  showBtn.onclick = async () => {
+    const r = await window.sys.showInFolder(state.outputPath);
+    if (!r?.ok) console.error("Show in folder failed:", r?.error);
+  };
+  playBtn.onclick = async () => {
+    const r = await window.sys.openFile(state.outputPath);
+    if (!r?.ok) console.error("Open file failed:", r?.error);
+  };
 }
+
 
 /**
  * Resets and disables the 'Show' and 'Play' buttons.
@@ -304,6 +313,25 @@ async function handleFileSelection(backendPath, fileName) {
   } catch {}
 
   if (DOMElements.meta) DOMElements.meta.textContent = `${base} • ${durText} • ${sizeText}`;
+
+  // Enable actions for the INPUT file right away
+  const { showBtn, playBtn } = DOMElements;
+  if (showBtn && playBtn) {
+    showBtn.disabled = false;
+    playBtn.disabled = false;
+    showBtn.classList.add('active');
+    playBtn.classList.add('active');
+
+    showBtn.onclick = async () => {
+      const r = await window.sys.showInFolder(state.filePath);
+      if (!r?.ok) console.error('showInFolder (input) failed:', r?.error);
+    };
+    playBtn.onclick = async () => {
+      const r = await window.sys.openFile(state.filePath);
+      if (!r?.ok) console.error('openFile (input) failed:', r?.error);
+    };
+  }
+
 
   try {
     const th = await window.py.send("thumb", { path: state.filePath });

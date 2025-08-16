@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder"
+    "build": "electron-builder --win"
   },
   "devDependencies": {
     "electron": "^30.0.0",
@@ -16,7 +16,7 @@
   },
   "build": {
     "appId": "com.znypr.autotrim",
-    "productName": "AutoTrim App",
+    "productName": "AutoTrim",
     "asar": true,
     "files": [
       "main.js",
@@ -25,16 +25,8 @@
     ],
     "extraResources": [
       {
-        "from": "../python/dist/service.exe",
-        "to": "service/service.exe"
-      },
-      {
-      "from": "build_assets/python",
-      "to": "python"
-      },
-      {
-        "from": "../ffmpeg",
-        "to": "service/ffmpeg"
+        "from": "dist/service.exe",
+        "to": "python/service.exe"
       }
     ],
     "win": {
