@@ -351,6 +351,11 @@ async function handleFileSelection(backendPath, fileName) {
   startAnalysisJob(state.filePath);
 }
 
+function updateSliderFill(slider) {
+  const percent = ((slider.value - slider.min) / (slider.max - slider.min)) * 100;
+  slider.style.setProperty('--p', `${percent}%`);
+}
+
 /**
  * Generates and updates the suggested output filename based on current parameters.
  */
@@ -755,6 +760,12 @@ function wireEventListeners() {
     } catch {}
   });
 
+  document.querySelectorAll('.vslider').forEach(slider => {
+    // Set the initial fill when the app loads
+    updateSliderFill(slider);
+    // Update the fill whenever the slider is moved
+    slider.addEventListener('input', () => updateSliderFill(slider));
+  });
 
   // --- Parameter & Preset UI ---
   DOMElements.paramInfoBtn?.addEventListener("click", () =>

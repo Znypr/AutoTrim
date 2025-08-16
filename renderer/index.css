@@ -233,7 +233,7 @@ body {
 .range-fill {
   position: absolute;
   height: 6px;
-  background: rgba(29,185,84,.18); 
+  background: rgba(29,185,84,.17); 
   border-radius: 999px;
   left: 0;
   width: 0;
@@ -340,11 +340,15 @@ body {
   width: 150px;
   height: 6px;
   border-radius: 999px;
-  background: #222;
   outline: none;
   margin: 0;
+  background: linear-gradient(to right,
+    rgba(29,185,84,0.17) 0%,
+    rgba(29, 185, 84, 0.17) var(--p, 0%),
+    #222 var(--p, 0%),
+    #222 100%
+  );
 }
-
 .vslider::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px;
