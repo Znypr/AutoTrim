@@ -1,8 +1,8 @@
 # python/service.py
 
-import sys, json, os, traceback, subprocess, base64, tempfile
+import sys, json, os, traceback, subprocess, base64, tempfile, signal, time, shutil
 import trim
-import threading, time, uuid, re
+import threading, uuid, re
 import collections, math
 
 PARAM_CONFIG = {
@@ -13,6 +13,28 @@ PARAM_CONFIG = {
 }
 
 JOBS = {}  # job_id -> {"cancel": threading.Event(), "thread": Thread}
+
+def cleanup_old_partials():
+    """Deletes partial files older than 24 hours from the temp directory."""
+    try:
+        partial_dir = os.path.join(tempfile.gettempdir(), "autotrim_partials")
+        if not os.path.isdir(partial_dir):
+            return
+
+        cutoff = time.time() - (24 * 60 * 60)  # 24 hours ago
+
+        for filename in os.listdir(partial_dir):
+            if ".partial" in filename:
+                file_path = os.path.join(partial_dir, filename)
+                try:
+                    if os.path.getmtime(file_path) < cutoff:
+                        os.remove(file_path)
+                except OSError:
+                    # File might be in use or already deleted
+                    pass
+    except Exception:
+        # Do not crash the app if cleanup fails for any reason
+        pass
 
 def _has_nvenc():
     try:
@@ -139,6 +161,13 @@ def cmd_trim(payload):
             sys.stderr.write(f"[svc] Starting trim job {job_id} for {path}\n"); sys.stderr.flush()
             trim.CANCEL = cancel_ev
 
+            # Create and define path for the temporary partial file
+            partial_dir = os.path.join(tempfile.gettempdir(), "autotrim_partials")
+            os.makedirs(partial_dir, exist_ok=True)
+            
+            out_base, out_ext = os.path.splitext(out)
+            tmp_out = os.path.join(partial_dir, f"{job_id}.partial{out_ext}")
+
             dur = trim.ffprobe_duration(path)
             
             def input_has_audio(p):
@@ -189,17 +218,6 @@ def cmd_trim(payload):
 
             def on_render(fr): send("progress", stage="render", value=fr)
             send("progress", stage="render", value=0.01)
-
-            tmp_out = out + ".partial.mp4"
-
-            if os.path.exists(tmp_out):
-                try:
-                    os.replace(tmp_out, out)
-                except Exception as e:
-                    send("job", id=job_id, status="error", error=f"Failed to finalize output: {e}", kind="trim")
-                    return
-
-            send("job", id=job_id, status="finished", ok=True, kind="trim", output=out)
 
             use_nvenc = _has_nvenc()
             vcodec_args = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"] if use_nvenc else \
@@ -256,8 +274,8 @@ def cmd_trim(payload):
                 return
             
             try:
-                if os.path.exists(out): os.remove(out)
-                os.replace(tmp_out, out)
+                # Use shutil.move for a robust move from temp dir to final destination
+                shutil.move(tmp_out, out)
             except Exception as e:
                 send("job", id=job_id, status="error", error=f"finalize failed: {e}")
                 return
@@ -274,6 +292,12 @@ def cmd_trim(payload):
             JOBS.pop(job_id, None)
             try: cancel_ev.clear()
             except Exception: pass
+            # Clean up the partial file if it still exists (e.g., on error)
+            if os.path.exists(tmp_out):
+                try:
+                    os.remove(tmp_out)
+                except Exception:
+                    pass
 
     t = threading.Thread(target=worker, daemon=True)
     JOBS[job_id] = {"cancel": cancel_ev, "thread": t}
@@ -302,7 +326,19 @@ def cmd_cancel(payload):
     j["cancel"].set()
     return {"ok": True, "job": job}
 
+def cleanup_and_exit(signum, frame):
+    """Signal handler to kill all ffmpeg processes before exiting."""
+    trim.kill_all_active_processes()
+    sys.exit(0)
+
 def main():
+    # Run cleanup once at startup
+    cleanup_old_partials()
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, cleanup_and_exit)
+    signal.signal(signal.SIGINT, cleanup_and_exit)
+
     for line in sys.stdin:
         line=line.strip()
         if not line: continue

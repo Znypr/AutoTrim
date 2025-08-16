@@ -1,5 +1,5 @@
 # python/trim.py
-import argparse, os, re, subprocess, sys, threading, time, math
+import argparse, os, re, subprocess, sys, threading, time, math, signal
 from typing import List, Tuple
 from collections import Counter
 from queue import Queue, Empty
@@ -11,10 +11,31 @@ from matplotlib.ticker import PercentFormatter
 # ---- Globals -----------------------------------------------------------------
 
 CANCEL = threading.Event()
+# A global list to track and manage active ffmpeg subprocesses
+ACTIVE_PROCESSES = []
 
 STDERR_TIME_RE = re.compile(r'time=(\d{2}):(\d{2}):(\d{2})[.,](\d{2})')
 
 # ---- Small utilities ---------------------------------------------------------
+
+def kill_all_active_processes():
+    """Terminates all registered ffmpeg processes and their process groups."""
+    for proc in ACTIVE_PROCESSES:
+        try:
+            if os.name == 'nt':
+                # On Windows, send a CTRL_BREAK_EVENT to the process group
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                # On Unix-like systems, send SIGTERM to the entire process group
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                # Fallback to a forceful kill if graceful termination fails
+                proc.kill()
+            except:
+                pass # Process may already be dead
+    ACTIVE_PROCESSES.clear()
 
 def _positive_float(x: str) -> float:
     f = float(x)
@@ -22,13 +43,18 @@ def _positive_float(x: str) -> float:
         raise argparse.ArgumentTypeError("--bins must be a positive, finite number")
     return f
 
-def _popen_hidden_kwargs():
+def _popen_creation_flags():
+    """
+    Returns Popen kwargs for creating a process that can be reliably
+    terminated as a group, and with a hidden window on Windows.
+    """
     if os.name == "nt":
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         CREATE_NO_WINDOW = 0x08000000
-        return {"startupinfo": si, "creationflags": CREATE_NO_WINDOW}
-    return {}
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        return {"creationflags": CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP}
+    else:
+        # Puts the child process in a new session and process group.
+        return {"preexec_fn": os.setsid}
 
 def _patch_ffmpeg_path():
     base = getattr(sys, "_MEIPASS",
@@ -40,10 +66,18 @@ def _patch_ffmpeg_path():
 _patch_ffmpeg_path()
 
 def ffprobe_duration(path: str) -> float:
+    # This is a short, blocking call, so no special process group handling is needed.
+    si = None
+    flags = 0
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        flags = 0x08000000 # CREATE_NO_WINDOW
+    
     return float(subprocess.check_output(
         ["ffprobe","-v","error","-show_entries","format=duration",
          "-of","default=noprint_wrappers=1:nokey=1", path],
-        text=True, **_popen_hidden_kwargs()
+        text=True, startupinfo=si, creationflags=flags
     ).strip())
 
 def _hms_cs_to_seconds(h, m, s, cs) -> float:
@@ -78,75 +112,89 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
         stdin=subprocess.DEVNULL, 
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True, encoding='utf-8', errors='replace', bufsize=1, **_popen_hidden_kwargs()
+        text=True, encoding='utf-8', errors='replace', bufsize=1,
+        **_popen_creation_flags()
     )
+    
+    ACTIVE_PROCESSES.append(proc)
+    
+    try:
+        q_out, q_err = Queue(), Queue()
 
-    q_out, q_err = Queue(), Queue()
+        def _reader_thread(pipe, queue):
+            try:
+                for line in iter(pipe.readline, ''):
+                    queue.put(line)
+            finally:
+                pipe.close()
+                queue.put(None)
 
-    def _reader_thread(pipe, queue):
-        try:
-            for line in iter(pipe.readline, ''):
-                queue.put(line)
-        finally:
-            pipe.close()
-            queue.put(None)
+        threading.Thread(target=_reader_thread, args=(proc.stdout, q_out), daemon=True).start()
+        threading.Thread(target=_reader_thread, args=(proc.stderr, q_err), daemon=True).start()
 
-    threading.Thread(target=_reader_thread, args=(proc.stdout, q_out), daemon=True).start()
-    threading.Thread(target=_reader_thread, args=(proc.stderr, q_err), daemon=True).start()
+        stderr_buf = []
+        stdout_closed = False
+        stderr_closed = False
+        last_progress_time = time.time()
+        rms_pat = re.compile(r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)") if on_rms else None
 
-    stderr_buf = []
-    stdout_closed = False
-    stderr_closed = False
-    last_progress_time = time.time()
-    rms_pat = re.compile(r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)") if on_rms else None
-
-    if on_progress:
-        try: on_progress(0.0)
-        except Exception: pass
-
-    while not stdout_closed or not stderr_closed:
-        if CANCEL.is_set():
-            try: proc.terminate()
+        if on_progress:
+            try: on_progress(0.0)
             except Exception: pass
-            while not q_out.empty(): q_out.get_nowait()
-            while not q_err.empty(): q_err.get_nowait()
-            raise RuntimeError("CANCELLED")
 
-        try:
-            line_out = q_out.get_nowait()
-            if line_out is None:
-                stdout_closed = True
-            else:
-                key, val = line_out.strip().split("=", 1)
-                if key in ("out_time_ms", "out_time_us", "out_time"):
-                    tval = _parse_progress_time(val)
-                    if tval is not None and total > 0 and on_progress:
-                        frac = max(0.0, min(1.0, tval / total))
-                        on_progress(frac)
-                        last_progress_time = time.time()
-                elif key == "progress" and val == "end" and on_progress:
-                    on_progress(1.0)
-        except Empty:
-            pass
+        while not stdout_closed or not stderr_closed:
+            if CANCEL.is_set():
+                try:
+                    if os.name == 'nt':
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                    else:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                finally:
+                    while not q_out.empty(): q_out.get_nowait()
+                    while not q_err.empty(): q_err.get_nowait()
+                raise RuntimeError("CANCELLED")
 
-        try:
-            line_err = q_err.get_nowait()
-            if line_err is None:
-                stderr_closed = True
-            else:
-                stderr_buf.append(line_err)
-                if on_rms and rms_pat and (m := rms_pat.search(line_err)):
-                    on_rms(float(m.group(1)))
-        except (Empty, ValueError):
-            pass
+            try:
+                line_out = q_out.get_nowait()
+                if line_out is None:
+                    stdout_closed = True
+                else:
+                    key, val = line_out.strip().split("=", 1)
+                    if key in ("out_time_ms", "out_time_us", "out_time"):
+                        tval = _parse_progress_time(val)
+                        if tval is not None and total > 0 and on_progress:
+                            frac = max(0.0, min(1.0, tval / total))
+                            on_progress(frac)
+                            last_progress_time = time.time()
+                    elif key == "progress" and val == "end" and on_progress:
+                        on_progress(1.0)
+            except Empty:
+                pass
 
-        if q_out.empty() and q_err.empty():
-            if on_progress and (time.time() - last_progress_time) > 2.0 and total > 0 and not stdout_closed:
-                on_progress(0.001)
-            time.sleep(0.05)
+            try:
+                line_err = q_err.get_nowait()
+                if line_err is None:
+                    stderr_closed = True
+                else:
+                    stderr_buf.append(line_err)
+                    if on_rms and rms_pat and (m := rms_pat.search(line_err)):
+                        on_rms(float(m.group(1)))
+            except (Empty, ValueError):
+                pass
 
-    proc.wait()
-    return proc.returncode or 0, "".join(stderr_buf)
+            if q_out.empty() and q_err.empty():
+                if on_progress and (time.time() - last_progress_time) > 2.0 and total > 0 and not stdout_closed:
+                    on_progress(0.001)
+                time.sleep(0.05)
+
+        proc.wait()
+        return proc.returncode or 0, "".join(stderr_buf)
+    finally:
+        if proc in ACTIVE_PROCESSES:
+            ACTIVE_PROCESSES.remove(proc)
 
 # ---- CLI args / filenames -----------------------------------------------------
 

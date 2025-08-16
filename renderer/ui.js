@@ -91,6 +91,8 @@ function initializeBackendEventHandler() {
  * Handles real-time progress updates from the backend.
  */
 function handleProgressUpdate(msg) {
+  if (!state.jobId) return; 
+
   if (!window.__prog) window.__prog = { raf: 0 };
   window.__prog.pending = { stage: msg.stage, value: msg.value };
 
@@ -138,7 +140,7 @@ function handleJobStatusUpdate(msg) {
       case "finished":
         if (msg.kind === "trim" && msg.ok) {
           setStatus("Done.");
-          showPostRenderActions(msg.output); // only enable after trim
+          showPostRenderActions(msg.output); 
         }
         state.jobId = null;
         state.cancelling = false;
@@ -761,9 +763,7 @@ function wireEventListeners() {
   });
 
   document.querySelectorAll('.vslider').forEach(slider => {
-    // Set the initial fill when the app loads
     updateSliderFill(slider);
-    // Update the fill whenever the slider is moved
     slider.addEventListener('input', () => updateSliderFill(slider));
   });
 

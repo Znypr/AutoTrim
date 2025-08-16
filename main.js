@@ -113,10 +113,10 @@ function createWindow() {
       const display = screen.getDisplayMatching(win.getBounds());
       const maxH = Math.floor(display.workArea.height * 0.9);
       const maxW = Math.floor(display.workArea.width * 0.95);
-      const EXTRA_W = 45;   // breathing room around cards
-      const EXTRA_H = 40;   // account for status bar + spacing
-      const MIN_W = 1030;   // ensure comfortable default width
-      const MIN_H = 340;    // ensure comfortable default height
+      const EXTRA_W = 45;   
+      const EXTRA_H = 40;   
+      const MIN_W = 1030;   
+      const MIN_H = 340;    
       const targetH = Math.max(MIN_H, Math.min(h + EXTRA_H, maxH));
       const targetW = Math.min(Math.max(MIN_W, w + EXTRA_W), maxW);
       win.setMinimumSize(MIN_W, MIN_H);
@@ -146,7 +146,7 @@ ipcMain.handle('sys:showInFolder', (_evt, p) => {
 ipcMain.handle('sys:openFile', async (_evt, p) => {
   try {
     if (!p) return { ok: false, error: 'No path' };
-    const res = await shell.openPath(p); // empty string on success
+    const res = await shell.openPath(p);
     return res ? { ok: false, error: res } : { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
