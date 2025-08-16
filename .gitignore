@@ -29,8 +29,6 @@ ffmpeg/
 *.mov
 *.mkv
 *.webm
-*.png
-*.jpg
 
 # App
 node_modules/
