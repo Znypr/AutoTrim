@@ -149,7 +149,7 @@ function handleJobStatusUpdate(msg) {
         
     case "cancelled":
     case "error":
-      setStatus(msg.status === "cancelled" ? "Cancelled." : `Error: ${msg.error || "Failed."}`);
+      setStatus(msg.status === "cancelled" ? "Cancelled." : "Error.");
       if (msg.status === "error") console.error(`${msg.kind || "Job"} error:`, msg.error);
       state.jobId = null;
       state.cancelling = false;
@@ -177,7 +177,7 @@ async function startAnalysisJob(path) {
       throw new Error(res?.error || "Failed to start analysis job.");
     }
   } catch (e) {
-    setStatus(`Error: ${e.message || e}`);
+    setStatus("Error.");
     setStartBtnIdle();
     setProgress(0);
   }
@@ -970,7 +970,7 @@ async function handleStartTrimClick() {
     if (!res?.ok) throw new Error(res?.error || "Trim failed to start.");
   } catch (e) {
     console.error(e);
-    setStatus(`Error: ${e.message || e}`);
+    setStatus("Error.");
     setProgress(0);
     setStartBtnIdle();
   }
