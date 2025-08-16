@@ -122,10 +122,12 @@ function handleProgressUpdate(msg) {
  * Handles job lifecycle updates (started, finished, error, etc.).
  */
 function handleJobStatusUpdate(msg) {
+  // Ignore events that don't match the currently active job.
   if (state.jobId && msg.id !== state.jobId) return;
 
   switch (msg.status) {
     case "started":
+      // This block handles the beginning of a job.
       state.jobId = msg.id;
       setStartBtnActive();
       if (msg.kind === "trim") {
@@ -137,32 +139,40 @@ function handleJobStatusUpdate(msg) {
       setProgress(0.01);
       break;
 
-      case "finished":
-        if (msg.kind === "trim" && msg.ok) {
-          setStatus("Done.");
-          showPostRenderActions(msg.output); 
-        }
-        state.jobId = null;
-        state.cancelling = false;
-        setStartBtnIdle();
-        setProgress(0);
-        if (window.__prog) window.__prog.pending = null;
-        break;
-        
+    case "finished":
     case "cancelled":
     case "error":
-      setStatus(msg.status === "cancelled" ? "Cancelled." : "Error.");
-      if (msg.status === "error") console.error(`${msg.kind || "Job"} error:`, msg.error);
+      
+      if (window.__prog?.raf) {
+        cancelAnimationFrame(window.__prog.raf);
+        window.__prog.raf = 0;
+      }
+
+      // --- Set the final status text and update UI buttons ---
+      if (msg.status === "finished" && msg.kind === "trim" && msg.ok) {
+        // Case 1: The trim job finished successfully.
+        setStatus("Done.");
+        showPostRenderActions(msg.output);
+      } else {
+        // Case 2: The job was cancelled, failed, or was a non-trim job (like analysis).
+        resetPostRenderActions();
+        if (msg.status === "cancelled") {
+          setStatus("Cancelled.");
+        } else if (msg.status === "error") {
+          setStatus("Error.");
+          console.error(`${msg.kind || "Job"} error:`, msg.error);
+        }
+      }
+
+      // --- Perform common cleanup for ANY finished job ---
       state.jobId = null;
       state.cancelling = false;
       setStartBtnIdle();
       setProgress(0);
-      resetPostRenderActions();
       if (window.__prog) window.__prog.pending = null;
       break;
   }
 }
-
 
 /**
  * Starts the backend histogram analysis job.

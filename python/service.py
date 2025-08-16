@@ -280,7 +280,7 @@ def cmd_trim(payload):
                 send("job", id=job_id, status="error", error=f"finalize failed: {e}")
                 return
 
-            send("job", id=job_id, status="finished", ok=True, output=out)
+            send("job", id=job_id, status="finished", ok=True, kind="trim", output=out)
 
         except RuntimeError as e:
             if "CANCELLED" in str(e): send("job", id=job_id, status="cancelled")
