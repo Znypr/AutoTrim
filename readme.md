@@ -1,6 +1,6 @@
 # AutoTrim
 
-A standalone desktop app to automatically remove silent parts from videos. No installation required—just download and run.
+A standalone desktop app to automatically remove silent parts from videos. No installation required - just download and run.
 
 ![AutoTrim Interface](images/image1.png)
 
@@ -8,7 +8,7 @@ A standalone desktop app to automatically remove silent parts from videos. No in
 ## ## Features
 
 * **Interactive Audio Histogram**
-    Instantly see your video's audio loudness distribution. Click and drag on the chart to visually set the noise floor—any sound below this level is considered silence.
+    Instantly see your video's audio loudness distribution. Click and drag on the chart to visually set the noise floor - any sound below this level is considered silence.
 
     ![Audio Histogram](images/image-histogram.png)
 
