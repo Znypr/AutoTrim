@@ -584,15 +584,3 @@ body {
   color: #e74c3c; 
 }
 
-#noiseDb {
-  background: linear-gradient(to right,
-    rgba(231, 76, 60, 0.17) 0%,
-    rgba(231, 76, 60, 0.17) var(--p, 0%),
-    #222 var(--p, 0%),
-    #222 100%
-  );
-}
-
-#noiseDb::-webkit-slider-thumb {
-  background: var(--accent-danger);
-}

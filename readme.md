@@ -2,20 +2,28 @@
 
 A standalone desktop app to automatically remove silent parts from videos. No installation required—just download and run.
 
+![AutoTrim Interface](images/image1.png)
+
 ---
 ## ## Features
 
 * **Interactive Audio Histogram**
     Instantly see your video's audio loudness distribution. Click and drag on the chart to visually set the noise floor—any sound below this level is considered silence.
 
+    ![Audio Histogram](images/image-histogram.png)
+
 * **Fine-Tuning Sliders**
     Precisely control the trimming process with four key parameters: **Noise** threshold, **Silence** duration, **Padding**, and minimum **Clip** length.
+
+    ![Parameter Sliders](images/image-parameters.png)
 
 * **Parameter Presets**
     Save your favorite slider settings as a named preset. Quickly load them later for a consistent editing style across multiple videos.
 
 * **Real-Time Progress**
     A detailed progress bar keeps you updated on the status of your trim job, from initial analysis and silence detection to final rendering.
+
+    ![Trimming in Progress](images/image2.png)
 
 * **Hardware Acceleration**
     Automatically uses NVIDIA (NVENC) hardware acceleration for encoding if available, resulting in significantly faster processing times.
