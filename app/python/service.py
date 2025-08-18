@@ -4,7 +4,6 @@ import sys, json, os, traceback, subprocess, base64, tempfile, signal, time, shu
 import trim
 import threading, uuid, re
 import collections, math
-import numpy as np
 
 PARAM_CONFIG = {
     "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -35.0},
@@ -76,6 +75,8 @@ def cmd_analyze(payload):
             min_db = float(payload.get("min_db", -60))
             max_db = float(payload.get("max_db", 0))
             bins = float(payload.get("bins", 1.0))
+            if not math.isfinite(bins) or bins <= 0:
+                raise RuntimeError("Invalid bin width")
 
             dur = trim.ffprobe_duration(path)
             send("progress", stage="analyze", value=0.01, hint_total=dur)
@@ -89,10 +90,19 @@ def cmd_analyze(payload):
                 raise RuntimeError("No audio levels parsed from video.")
 
             tenth = [round(v, 1) for v in vals]
-            def bin_start(x): return round(min_db + math.floor((x - min_db) / bins) * bins, 1)
-            counts = collections.Counter(bin_start(x) for x in tenth if min_db <= x <= max_db)
+            def bin_start(x):
+                return round(min_db + math.floor((x - min_db) / bins) * bins, 1)
 
-            edges = [round(e, 1) for e in np.arange(min_db, max_db + 1e-9, bins)]
+            counts = collections.Counter(
+                bin_start(x) for x in tenth if min_db <= x <= max_db
+            )
+
+            edges = []
+            e = min_db
+            while e <= max_db + 1e-9:
+                edges.append(round(e, 1))
+                e += bins
+
             total = sum(counts.values()) or 1
             ys = [(counts.get(s, 0) / total) * 100.0 for s in edges[:-1]]
 

@@ -351,7 +351,9 @@ function ensureChart() {
 function renderHist(xs, ys, lo, hi) {
   if (!xs.length) return;
   const a = Math.min(lo, hi), b = Math.max(lo, hi);
-  const sel = xs.map((x, i) => ({ x, y: ys[i] })).filter((p) => p.x >= a && p.x <= b);
+  const sel = xs
+    .map((x, i) => ({ x, y: ys[i] }))
+    .filter((p) => p.x >= a && p.x <= b && Number.isFinite(p.y));
   if (!sel.length) return;
   const ch = ensureChart();
   ch.options.scales.x.min = a;
