@@ -197,8 +197,8 @@ ipcMain.handle('sys:chooseOpen', async (_evt, opts = {}) => {
       properties: ['openFile'],
       filters: [ { name: 'Video Files', extensions: ['mp4','mov','mkv','avi','webm'] }, { name: 'All Files', extensions: ['*'] } ]
     });
-    if (res.canceled || !res.filePaths?.[0]) return { ok: false, cancelled: true };
-    return { ok: true, path: res.filePaths[0] };
+    if (res.canceled) return { ok: false, cancelled: true };
+    return { ok: true, paths: res.filePaths };
   } catch (e) {
     return { ok: false, error: String(e) };
   }

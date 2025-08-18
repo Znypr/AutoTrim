@@ -3,7 +3,7 @@ import argparse, os, re, subprocess, sys, threading, time, math, signal
 from typing import List, Tuple
 from collections import Counter
 from queue import Queue, Empty
-
+import atexit
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
@@ -15,6 +15,8 @@ CANCEL = threading.Event()
 ACTIVE_PROCESSES = []
 
 STDERR_TIME_RE = re.compile(r'time=(\d{2}):(\d{2}):(\d{2})[.,](\d{2})')
+
+
 
 # ---- Small utilities ---------------------------------------------------------
 
@@ -36,6 +38,8 @@ def kill_all_active_processes():
             except:
                 pass # Process may already be dead
     ACTIVE_PROCESSES.clear()
+
+atexit.register(kill_all_active_processes)
 
 def _positive_float(x: str) -> float:
     f = float(x)
@@ -341,25 +345,40 @@ def trim_video(input_path: str, noise: str, silence: float, pad: float,
 
 # ---- Histogram ---------------------------------------------------------------
 
-def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]:
-    """Collect per-frame RMS dBFS while streaming progress."""
-    vals: List[float] = []
-
-    cmd = [
-        "ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y",
-        "-i", input_path,
-        "-map","0:a?","-vn","-sn","-dn",
-        "-af","pan=mono|c0=0.5*c0+0.5*c1,astats=metadata=1:reset=1,ametadata=print:mode=print",
-        "-f","null","-"
-    ]
+def analyze_levels(input_path: str, dur: float, on_progress=None):
+    """
+    Collect RMS levels while allowing cooperative cancellation via CANCEL.
+    Uses astats and run_ffmpeg_progress so CTRL_BREAK / SIGTERM works cleanly.
+    Returns a list of float dB values (RMS_level).
+    """
+    vals = []
 
     def _on_rms(v: float):
         if math.isfinite(v):
             vals.append(v)
 
-    rc, _ = run_ffmpeg_progress(cmd, dur, "levels", on_progress=on_progress, on_rms=_on_rms)
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
+        "-i", input_path,
+        "-af", "astats=metadata=1:reset=1:measure_overall=1:measure_perchannel=0",
+        "-f", "null", "-"
+    ]
+
+    rc, _stderr = run_ffmpeg_progress(
+        cmd,
+        total=dur,
+        desc="analyze",
+        on_progress=on_progress,
+        on_rms=_on_rms
+    )
+
+    if CANCEL.is_set():
+        raise RuntimeError("CANCELLED")
+
+    if rc != 0 and not vals:
+        raise RuntimeError("ffmpeg analyze failed")
+
     return vals
 
 def plot_histogram(vals: List[float], binsize: float, min_db: float, max_db: float, outpath: str):

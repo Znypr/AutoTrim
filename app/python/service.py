@@ -4,6 +4,7 @@ import sys, json, os, traceback, subprocess, base64, tempfile, signal, time, shu
 import trim
 import threading, uuid, re
 import collections, math
+import numpy as np
 
 PARAM_CONFIG = {
     "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -35.0},
@@ -43,6 +44,20 @@ def _has_nvenc():
         return "h264_nvenc" in out
     except Exception:
         return False
+    
+def _gpu_decode_args():
+    """Return ffmpeg args to enable GPU decoding when available."""
+    try:
+        out = subprocess.check_output([
+            "ffmpeg", "-hide_banner", "-hwaccels"
+        ], text=True, creationflags=CREATE_NO_WINDOW)
+        if "cuda" in out:
+            return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+    except Exception:
+        pass
+    return []
+
+
 def _new_job_id():
     return uuid.uuid4().hex[:8]
 
@@ -62,11 +77,11 @@ def cmd_analyze(payload):
             max_db = float(payload.get("max_db", 0))
             bins = float(payload.get("bins", 1.0))
 
-            send("progress", stage="analyze", value=0.01)
             dur = trim.ffprobe_duration(path)
+            send("progress", stage="analyze", value=0.01, hint_total=dur)
 
             def on_analyze_progress(frac):
-                send("progress", stage="analyze", value=min(0.99, max(0.0, frac)))
+                send("progress", stage="analyze", value=min(0.99, max(0.0, frac)), hint_total=dur)
 
             vals = trim.analyze_levels(path, dur, on_progress=on_analyze_progress)
             vals = [v for v in vals if math.isfinite(v)]
@@ -102,203 +117,242 @@ def cmd_analyze(payload):
 
 
 def cmd_trim(payload):
-    # --- Use default values from the central config ---
-    noise         = float(payload.get("noise_db", PARAM_CONFIG["noise_db"]["default"]))
-    silence       = float(payload.get("silence",  PARAM_CONFIG["silence"]["default"]))
-    pad           = float(payload.get("pad",      PARAM_CONFIG["pad"]["default"]))
-    keep          = float(payload.get("keep",     PARAM_CONFIG["keep"]["default"]))
-    path          = payload["path"]
+    """
+    Trim silent parts and render a single output.
+    Emits progress events for:
+      - stage="detect"  (silence detection)
+      - stage="render"  (encoding)
+    Returns immediately with {"ok": True, "job": <id>} and streams events.
+    """
+    # ---------- Helpers ----------
+    def shell_join(args:list[str]) -> str:
+        import shlex
+        return " ".join(shlex.quote(a) for a in args)
 
-    # Validate input file exists and is accessible
-    if not os.path.exists(path):
-        return {"ok": False, "error": f"Input file not found: {path}"}
-    
-    if not os.access(path, os.R_OK):
-        return {"ok": False, "error": f"Cannot read input file: {path}"}
-    
-    # Check if FFmpeg is available
-    try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True, timeout=10)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return {"ok": False, "error": "FFmpeg not found or not working. Please ensure FFmpeg is installed and accessible."}
-    
-    # Validate parameters
-    if silence <= 0:
-        return {"ok": False, "error": "Silence duration must be positive"}
-    
-    if pad < 0:
-        return {"ok": False, "error": "Pad duration cannot be negative"}
-    
-    if keep <= 0:
-        return {"ok": False, "error": "Keep threshold must be positive"}
-
-    # Optional custom output path (from UI). If not provided, default to Downloads
-    out = payload.get("out")
-    if out:
+    def ffprobe_has_stream(path:str, kind:str) -> bool:
+        # kind: "v" or "a"
         try:
-            out_dir = os.path.dirname(out) or "."
-            os.makedirs(out_dir, exist_ok=True)
+            out = subprocess.check_output(
+                ["ffprobe","-v","error","-select_streams", f"{kind}:0",
+                 "-show_entries","stream=index","-of","csv=p=0", path],
+                text=True, creationflags=CREATE_NO_WINDOW
+            )
+            return bool(out.strip())
         except Exception:
-            pass
-    else:
-        base_name = os.path.splitext(os.path.basename(path))[0]
-        
-        # Format parameter values for the filename
-        n_val = abs(int(noise))
-        s_val = int(silence * 100)
-        p_val = int(pad * 100)
-        k_val = int(keep * 100)
+            return False
 
-        # Construct the new filename (using 'C' for 'keep' as per the example)
-        new_filename = f"{base_name}-N{n_val}-S{s_val}-P{p_val}-C{k_val}.mp4"
+    def send_ffmpeg_error(job_id, where:str, cmd:list[str], stderr_txt:str):
+        head = "\n".join((stderr_txt or "").splitlines()[:30])  # cap for UI
+        sys.stderr.write(f"[svc] ffmpeg {where} failed\n[svc] CMD: {shell_join(cmd)}\n[svc] STDERR:\n{head}\n")
+        sys.stderr.flush()
+        send("job", id=job_id, status="error",
+             error=f"{where} failed. See logs.\n{head}", kind="trim")
 
-        out = os.path.join(os.path.expanduser("~"), "Downloads", new_filename)
+    # ---------- Inputs & validation ----------
+    noise   = float(payload.get("noise_db", PARAM_CONFIG["noise_db"]["default"]))
+    silence = float(payload.get("silence",  PARAM_CONFIG["silence"]["default"]))
+    pad     = float(payload.get("pad",      PARAM_CONFIG["pad"]["default"]))
+    keep    = float(payload.get("keep",     PARAM_CONFIG["keep"]["default"]))
+    path    = payload.get("path")
 
+    if not path or not os.path.exists(path):
+        return {"ok": False, "error": f"Input file not found: {path!r}"}
+    if not os.access(path, os.R_OK):
+        return {"ok": False, "error": f"Cannot read input file: {path!r}"}
+
+    try:
+        subprocess.run(["ffmpeg","-version"], capture_output=True, check=True,
+                       timeout=10, creationflags=CREATE_NO_WINDOW)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return {"ok": False, "error": "FFmpeg not found or not working. Please install/enable FFmpeg."}
+
+    if silence <= 0: return {"ok": False, "error": "Silence duration must be positive"}
+    if pad < 0:      return {"ok": False, "error": "Pad duration cannot be negative"}
+    if keep <= 0:    return {"ok": False, "error": "Keep threshold must be positive"}
+
+    # ---------- Output path ----------
+    out = payload.get("out")
+    if not out:
+        base = os.path.splitext(os.path.basename(path))[0]
+        n = abs(int(noise)); s = int(silence * 100); p = int(pad * 100); k = int(keep * 100)
+        out = os.path.join(os.path.expanduser("~"), "Downloads", f"{base}-N{n}-S{s}-P{p}-C{k}.mp4")
+    try:
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    except Exception:
+        pass
+
+    # ---------- Job bookkeeping ----------
     job_id    = _new_job_id()
     cancel_ev = threading.Event()
 
     def worker():
         try:
-            sys.stderr.write(f"[svc] Starting trim job {job_id} for {path}\n"); sys.stderr.flush()
+            cleanup_old_partials()
             trim.CANCEL = cancel_ev
 
-            # Create and define path for the temporary partial file
             partial_dir = os.path.join(tempfile.gettempdir(), "autotrim_partials")
             os.makedirs(partial_dir, exist_ok=True)
-            
-            out_base, out_ext = os.path.splitext(out)
+            _, out_ext = os.path.splitext(out)
             tmp_out = os.path.join(partial_dir, f"{job_id}.partial{out_ext}")
 
             dur = trim.ffprobe_duration(path)
-            
-            def input_has_audio(p):
-                try:
-                    out = subprocess.check_output([
-                        "ffprobe","-v","error","-select_streams","a:0",
-                        "-show_entries","stream=index","-of","csv=p=0", p
-                    ], text=True, creationflags=CREATE_NO_WINDOW)
-                    return bool(out.strip())
-                except Exception:
-                    return True
-            has_audio = input_has_audio(path)
-            def on_detect(fr): send("progress", stage="detect", value=fr)
+            has_video = ffprobe_has_stream(path, "v")
+            has_audio = ffprobe_has_stream(path, "a")
+            if not has_video:
+                send("job", id=job_id, status="error", error="Input has no video stream.", kind="trim")
+                return
 
-            sys.stderr.write(f"[svc] detect dur={dur:.3f}s noise={noise}dB silence={silence}s\n"); sys.stderr.flush()
-            send("progress", stage="detect", value=0.01)
+            use_nvenc = _has_nvenc()
+            hwaccel_args = _gpu_decode_args() if use_nvenc else []
+
+            # ---------- Stage 1: detect ----------
+            def on_detect(fr): send("progress", stage="detect", value=max(0.0, min(1.0, fr)), hint_total=dur)
+            send("progress", stage="detect", value=0.01, hint_total=dur)
 
             detect_cmd = [
-                "ffmpeg","-hide_banner","-progress","pipe:1","-y","-i", path,
+                "ffmpeg","-hide_banner","-loglevel","info","-progress","pipe:1","-nostdin","-y",
+                *hwaccel_args, "-i", path,
                 "-af", f"silencedetect=noise={trim._noise_for_ffmpeg(f'{noise}dB')}:d={silence}",
                 "-f","null","-"
             ]
-            
-            rc, txt = trim.run_ffmpeg_progress(detect_cmd, dur, "detect", on_progress=on_detect)
-
+            rc, detect_txt = trim.run_ffmpeg_progress(detect_cmd, dur, "detect", on_progress=on_detect)
             if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
-            
             if rc != 0:
-                send("job", id=job_id, status="error", error="ffmpeg detect failed")
+                send_ffmpeg_error(job_id, "detect", detect_cmd, detect_txt)
                 return
-            send("progress", stage="detect", value=1.0)
-            
-            starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+\.?\d*)", txt)]
-            ends   = [float(x) for x in re.findall(r"silence_end:\s*(\d+\.?\d*)",   txt)]
-            
+
+            starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+\.?\d*)", detect_txt)]
+            ends   = [float(x) for x in re.findall(r"silence_end:\s*(\d+\.?\d*)",   detect_txt)]
             if not starts and not ends:
+                # No silence metadata; treat as one speaking region
                 starts, ends = [], [dur]
-            
+
             segs = trim.build_speaking_segments(starts, ends, dur, pad, keep)
-            
             if not segs:
-                send("job", id=job_id, status="error", error="No keepable segments.")
+                send("job", id=job_id, status="error", error="No keepable segments.", kind="trim")
                 return
 
             eps = 0.010
-            clips = [(max(0.0, s), max(s + eps, e - eps)) for s, e in segs if e - s > eps]
+            clips = [(max(0.0, s), max(s + eps, e - eps)) for s, e in segs if (e - s) > eps]
             total_dur = max(0.001, sum(e - s for s, e in clips))
 
-            def on_render(fr): send("progress", stage="render", value=fr)
-            send("progress", stage="render", value=0.01)
+            # ---------- Stage 2: render ----------
+            def on_render(fr): send("progress", stage="render", value=max(0.0, min(1.0, fr)), hint_total=total_dur)
+            send("progress", stage="render", value=0.0, hint_total=total_dur)
 
-            use_nvenc = _has_nvenc()
-            vcodec_args = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"] if use_nvenc else \
-                          ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
-            acodec_args = ["-c:a","aac","-b:a","160k"] if has_audio else []
+            vcodec_args = (["-c:v","h264_nvenc","-preset","p1","-cq","23"] if use_nvenc
+                           else ["-c:v","libx264","-preset","ultrafast","-crf","23"])
+            acodec_args = (["-c:a","aac","-b:a","160k"] if has_audio else [])
 
-            rc = 1
-            stderr_txt = ""
-            filter_script_path = None
-            try:
-                if len(clips) == 1:
-                    st, et = clips[0]
-                    render_dur = max(0.001, et - st)
-                    cmd = ["ffmpeg","-hide_banner","-progress","pipe:1","-y",
-                           "-ss", f"{st:.6f}", "-to", f"{et:.6f}", "-i", path] + \
-                           vcodec_args + acodec_args + ["-movflags","+faststart", tmp_out]
-                else:
-                    vf, af = [], []
-                    for i, (st, et) in enumerate(clips):
-                        vf.append(f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{i}]")
-                        if has_audio:
-                            af.append(f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
-                    if has_audio:
-                        concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
-                        fc = ";".join(vf + af + [f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"])
-                        map_args = ["-map","[v]","-map","[a]"]
-                    else:
-                        concat_inputs = "".join(f"[v{i}]" for i in range(len(clips)))
-                        fc = ";".join(vf + [f"{concat_inputs}concat=n={len(clips)}:v=1:a=0[v]"])
-                        map_args = ["-map","[v]"]
-                    
-                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
-                        filter_script_path = f.name
-                        f.write(fc)
+            # Single clip path
+            if len(clips) == 1:
+                st, et = clips[0]
+                render_len = max(0.001, et - st)
+                base = [
+                    "ffmpeg","-hide_banner","-loglevel","verbose","-progress","pipe:1","-nostdin","-y",
+                    *hwaccel_args,
+                    "-ss", f"{st:.6f}", "-i", path,
+                    "-t", f"{render_len:.6f}",
+                ]
+                maps = ["-map","0:v:0"]
+                if has_audio: maps += ["-map","0:a:0"]
+                else: maps += ["-an"]
 
-                    cmd = ["ffmpeg","-hide_banner","-progress","pipe:1","-y","-i", path,
-                           "-filter_complex_script", filter_script_path] + map_args + vcodec_args + acodec_args + \
-                           ["-movflags","+faststart", tmp_out]
-                    render_dur = total_dur
-                
-                rc, stderr_txt = trim.run_ffmpeg_progress(cmd, render_dur, "render", on_progress=on_render)
-            finally:
-                if filter_script_path and os.path.exists(filter_script_path):
+                cmd = base + maps + vcodec_args + (acodec_args if has_audio else []) + ["-movflags","+faststart", tmp_out]
+                rc, stderr_txt = trim.run_ffmpeg_progress(cmd, total=render_len, desc="render", on_progress=on_render)
+
+                if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
+                if rc != 0:
+                    send_ffmpeg_error(job_id, "render", cmd, stderr_txt)
                     try:
-                        os.remove(filter_script_path)
+                        if os.path.isfile(tmp_out): os.remove(tmp_out)
                     except Exception:
-                        pass # Don't crash if cleanup fails
+                        pass
+                    return
 
-            if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
+            # Multi-clip concat
+            else:
+                # --- Multi-clip concat path (replace your current block) ---
+                render_len = total_dur
+                vf_parts, af_parts = [], []
 
-            if rc != 0:
-                err = (stderr_txt or "ffmpeg render failed").strip().splitlines()[-1] if stderr_txt else "ffmpeg render failed"
-                send("job", id=job_id, status="error", error=err)
-                return
-            
+                for idx, (st, et) in enumerate(clips):
+                    vf_parts.append(
+                        f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{idx}]"
+                    )
+                    if has_audio:
+                        # aresample keeps timestamps sane across cuts
+                        af_parts.append(
+                            f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS,aresample=async=1[a{idx}]"
+                        )
+
+                # Interleave inputs per segment: [v0][a0][v1][a1]...
+                concat_inputs = []
+                for idx in range(len(clips)):
+                    concat_inputs.append(f"[v{idx}]")
+                    if has_audio:
+                        concat_inputs.append(f"[a{idx}]")
+
+                fc_parts = []
+                fc_parts.extend(vf_parts)
+                if has_audio:
+                    fc_parts.extend(af_parts)
+
+                if has_audio:
+                    fc_parts.append(
+                        f"{''.join(concat_inputs)}concat=n={len(clips)}:v=1:a=1[v][a]"
+                    )
+                    maps = ["-map", "[v]", "-map", "[a]"]
+                else:
+                    fc_parts.append(
+                        f"{''.join(concat_inputs)}concat=n={len(clips)}:v=1:a=0[v]"
+                    )
+                    maps = ["-map", "[v]", "-an"]
+
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "verbose",
+                    "-progress", "pipe:1", "-nostdin", "-y",
+                    # IMPORTANT: no hwaccel with filter_complex
+                    "-i", path,
+                    "-filter_complex", ";".join(fc_parts),
+                    *maps,
+                    *vcodec_args,
+                    *(acodec_args if has_audio else []),
+                    "-movflags", "+faststart",
+                    tmp_out
+                ]
+
+                rc, stderr_txt = trim.run_ffmpeg_progress(
+                    cmd, total=render_len, desc="render", on_progress=on_render
+                )
+
+
+                if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
+                if rc != 0:
+                    send_ffmpeg_error(job_id, "render", cmd, stderr_txt)
+                    try:
+                        if os.path.isfile(tmp_out): os.remove(tmp_out)
+                    except Exception:
+                        pass
+                    return
+
+            # Move partial -> final
             try:
-                # Use shutil.move for a robust move from temp dir to final destination
-                shutil.move(tmp_out, out)
-            except Exception as e:
-                send("job", id=job_id, status="error", error=f"finalize failed: {e}")
-                return
-
+                os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            except Exception:
+                pass
+            shutil.move(tmp_out, out)
             send("job", id=job_id, status="finished", ok=True, kind="trim", output=out)
 
         except RuntimeError as e:
-            if "CANCELLED" in str(e): send("job", id=job_id, status="cancelled")
-            else: send("job", id=job_id, status="error", error=str(e))
+            if "CANCELLED" in str(e):
+                send("job", id=job_id, status="cancelled", kind="trim")
+            else:
+                send("job", id=job_id, status="error", error=str(e), kind="trim")
         except Exception as e:
-            traceback.print_exc()
-            send("job", id=job_id, status="error", error=str(e))
+            send("job", id=job_id, status="error", error=str(e), kind="trim")
         finally:
             JOBS.pop(job_id, None)
-            try: cancel_ev.clear()
-            except Exception: pass
-            # Clean up the partial file if it still exists (e.g., on error)
-            if os.path.exists(tmp_out):
-                try:
-                    os.remove(tmp_out)
-                except Exception:
-                    pass
 
     t = threading.Thread(target=worker, daemon=True)
     JOBS[job_id] = {"cancel": cancel_ev, "thread": t}
@@ -320,21 +374,45 @@ def cmd_thumb(payload):
         return {"ok": False, "error": str(e)}
 
 def cmd_cancel(payload):
-    job = payload.get("job")
-    j = JOBS.get(job)
+    job_id = payload.get("job")
+    j = JOBS.get(job_id)
     if not j:
-        return {"ok": False, "error": "Unknown job"}
-    j["cancel"].set()
-    return {"ok": True, "job": job}
+        # Nothing to cancel (already done or invalid id)
+        send("job", id=job_id, status="cancelled", kind="unknown")
+        return {"ok": True}
+    try:
+        j["cancel"].set()
+        return {"ok": True}
+    except Exception as e:
+        send("job", id=job_id, status="error", error=str(e), kind="cancel")
+        return {"ok": False, "error": str(e)}
+
 
 def cleanup_and_exit(signum, frame):
     """Signal handler to kill all ffmpeg processes before exiting."""
     trim.kill_all_active_processes()
     sys.exit(0)
 
+def cmd_cancel(payload):
+    job_id = payload.get("job")
+    j = JOBS.get(job_id)
+    if not j:
+        send("job", id=job_id, status="cancelled", kind="unknown")
+        return {"ok": True}
+    try:
+        j["cancel"].set()
+        return {"ok": True}
+    except Exception as e:
+        send("job", id=job_id, status="error", error=str(e), kind="cancel")
+        return {"ok": False, "error": str(e)}
+
+
 def main():
     # Run cleanup once at startup
-    cleanup_old_partials()
+    try:
+        cleanup_old_partials()
+    except Exception:
+        pass
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, cleanup_and_exit)
