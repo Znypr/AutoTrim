@@ -54,19 +54,18 @@ function startPython() {
     py.on('close', code => console.warn(`[py] exited with code ${code}`));
   }
 }
+
 function handlePythonLine(line) {
   if (!line.trim()) return;
   let msg;
   try { msg = JSON.parse(line); }
   catch { console.warn('Bad JSON from python:', line); return; }
 
-  // Event lines: { "event": "progress", ... }
   if (msg.event) {
     for (const w of windows) w.webContents.send('py:event', msg);
     return;
   }
 
-  // Reply lines: resolve the oldest pending request
   const waiter = replyQueue.shift();
   if (waiter) waiter.resolve(msg);
   else console.warn('Unmatched python reply:', msg);

@@ -406,6 +406,22 @@ def cmd_cancel(payload):
         send("job", id=job_id, status="error", error=str(e), kind="cancel")
         return {"ok": False, "error": str(e)}
 
+def cmd_get_params_config(_payload=None):
+    return {"ok": True, "config": PARAM_CONFIG}
+
+def cmd_probe(payload):
+    path = payload.get("path")
+    if not path or not os.path.exists(path):
+        return {"ok": False, "error": f"Input file not found: {path!r}"}
+    try:
+        dur = trim.ffprobe_duration(path)
+        # bytes -> MB (2 decimals)
+        size_mb = round(os.path.getsize(path) / (1024*1024), 2)
+        return {"ok": True, "duration": float(dur), "size_mb": size_mb}
+    except Exception as e:
+        return {"ok": False, "error": f"ffprobe failed: {e}"}
+
+
 
 def main():
     # Run cleanup once at startup
@@ -429,12 +445,7 @@ def main():
             elif cmd == "analyze":
                 res = cmd_analyze(req)
             elif cmd == "probe":
-                try:
-                    p = req.get("path")
-                    d = trim.ffprobe_duration(p)
-                    res = {"ok": True, "duration": d}
-                except Exception as e:
-                    res = {"ok": False, "error": str(e)}
+                res = cmd_probe(req)
             elif cmd == "thumb":
                 res = cmd_thumb(req)
             elif cmd == "trim":
