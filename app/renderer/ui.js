@@ -356,6 +356,10 @@ function renderHist(xs, ys, lo, hi) {
     .filter((p) => p.x >= a && p.x <= b && Number.isFinite(p.y));
   if (!sel.length) return;
   const ch = ensureChart();
+  if (!ch) {
+    console.warn("Histogram chart unavailable.");
+    return;
+  }
   ch.options.scales.x.min = a;
   ch.options.scales.x.max = b;
   ch.data.datasets[0].data = sel;
