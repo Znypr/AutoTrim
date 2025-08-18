@@ -4,9 +4,6 @@ from typing import List, Tuple
 from collections import Counter
 from queue import Queue, Empty
 import atexit
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import PercentFormatter
 
 # ---- Globals -----------------------------------------------------------------
 
@@ -382,6 +379,14 @@ def analyze_levels(input_path: str, dur: float, on_progress=None):
     return vals
 
 def plot_histogram(vals: List[float], binsize: float, min_db: float, max_db: float, outpath: str):
+    try:
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import PercentFormatter
+    except Exception as e:
+        print(f"[hist] Plotting requires numpy and matplotlib: {e}")
+        return
+
     vals = [v for v in vals if math.isfinite(v)]
     if not vals:
         print("[hist] No audio levels found, skipping histogram.")
@@ -417,12 +422,12 @@ def plot_histogram(vals: List[float], binsize: float, min_db: float, max_db: flo
 
     ax = plt.gca()
     ax.grid(True, axis="y", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.grid(True, axis="x", linestyle=":",  linewidth=0.4, alpha=0.35)
+    ax.grid(True, axis="x", linestyle=":", linewidth=0.4, alpha=0.35)
     ax.set_axisbelow(True)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
     ax.yaxis.set_major_formatter(PercentFormatter())
-    ax.set_xticks(np.arange(math.ceil(lo), math.floor(hi)+1, 1.0))
+    ax.set_xticks(np.arange(math.ceil(lo), math.floor(hi) + 1, 1.0))
     plt.xticks(rotation=90)
 
     plt.xlabel(f"RMS Level (dBFS) — bin width {b:.1f} dB")
