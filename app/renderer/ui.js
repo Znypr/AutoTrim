@@ -4,8 +4,6 @@
 // ----------------------- Helpers & State -----------------------
 const $ = (s) => document.querySelector(s);
 
-
-
 const state = {
   filePath: null,
   outputPath: null,
@@ -83,12 +81,10 @@ function handleProgressUpdate(msg) {
               : stage === "render"  ? "Rendering"
               : "Working";
 
-  // Prefer elapsed/p ETA (stable, independent of hint_total)
   let etaTxt = "";
   if (p > 0 && window.__job.t0) {
     const elapsed = (performance.now() - window.__job.t0) / 1000; // sec
     const remaining = elapsed * (1 - p) / p;
-    // simple clamp to avoid jumpy first second
     const rem = Math.max(0, isFinite(remaining) ? remaining : 0);
     const m = Math.floor(rem / 60);
     const s = Math.round(rem % 60);
@@ -115,7 +111,6 @@ function handleJobStatusUpdate(msg) {
     case "finished":
     case "cancelled":
     case "error":
-      if (window.__prog?.raf) { cancelAnimationFrame(window.__prog.raf); window.__prog.raf = 0; }
       if (msg.status === "finished" && msg.kind === "trim" && msg.ok) {
         setStatus("Done.");
         showPostRenderActions(msg.output);
@@ -130,7 +125,6 @@ function handleJobStatusUpdate(msg) {
       window.__job.t0 = 0;
       setStartBtnIdle();
       setProgress(0);
-      if (window.__prog) window.__prog.pending = null;
       return;
   }
 }
@@ -206,11 +200,11 @@ async function displayFileInformation(filePath) {
   try {
     const pr = await window.py.send("probe", { path: filePath });
     if (pr?.ok && Number.isFinite(pr.duration)) durText = formatDuration(pr.duration);
-  } catch {}
+  } catch { }
   try {
     const st = await window.sys?.fsStat?.(filePath);
     if (st?.ok && typeof st.size === "number") sizeText = formatSize(st.size);
-  } catch {}
+  } catch { }
 
   if (metaTitle && metaStats) {
     const MAX = 26, i = base.lastIndexOf("."), hasExt = i > 0 && base.length - i <= 5;
@@ -219,8 +213,6 @@ async function displayFileInformation(filePath) {
     metaTitle.textContent = name + ext;
     metaTitle.title = base;
     metaStats.innerHTML = `${durText} <span class="stats-sep">|</span> ${sizeText}`;
-  } else {
-    meta.innerHTML = `${base} <span class="stats-sep">|</span> ${durText} <span class="stats-sep">|</span> ${sizeText}`;
   }
 
   if (showBtn && playBtn) {
@@ -242,7 +234,7 @@ async function displayFileInformation(filePath) {
       };
       img.src = th.dataUrl;
     }
-  } catch {}
+  } catch { }
 }
 
 async function handleFileSelection(backendPath) {
@@ -273,13 +265,9 @@ function getCurrentSliderValues() {
 function updateSuggestedName() {
   if (!state.filePath) return;
   const fileName = state.filePath.split(/[/\\]/).pop(); if (!fileName) return;
-  const base = fileName.replace(/\.[^.]+$/, "");
-  const v = getCurrentSliderValues();
-  const n = Math.abs(parseInt(v.noise_db)), s = parseInt(v.silence * 100), p = parseInt(v.pad * 100), k = parseInt(v.keep * 100);
-  //state.suggestedName = `${base}-N${n}-S${s}-P${p}-C${k}.mp4`;
+  let base = fileName.replace(/\.[^.]+$/, "");
+  base = base.slice(0, 25);
   state.suggestedName = `${base}-trim.mp4`;
-
-  if (DOM.outMeta) DOM.outMeta.textContent = `Output: ${state.suggestedName}`;
 }
 
 // ----------------------- Settings & Presets -----------------------
@@ -292,7 +280,7 @@ async function loadSettings() {
     state.presets = Array.isArray(st.presets) ? st.presets : [];
     renderPresets();
     updateIoSummary();
-  } catch {}
+  } catch { }
 }
 async function savePresets() { await window.sys.setSettings({ presets: state.presets }); }
 
@@ -358,10 +346,6 @@ function renderHist(xs, ys, lo, hi) {
     .filter((p) => p.x >= a && p.x <= b && Number.isFinite(p.y));
   if (!sel.length) return;
   const ch = ensureChart();
-  if (!ch) {
-    console.warn("Histogram chart unavailable.");
-    return;
-  }
   ch.options.scales.x.min = a;
   ch.options.scales.x.max = b;
   ch.data.datasets[0].data = sel;
@@ -426,7 +410,7 @@ async function loadAndApplyParams() {
       s.value = String(cfg[k].default);
       s.dispatchEvent(new Event("input", { bubbles: true }));
     }
-  } catch {}
+  } catch { }
 }
 
 function bindVal(id, fmt) {
@@ -464,45 +448,6 @@ function formatDuration(totalSeconds) {
   return h > 0 ? `${h}h${two(m)}m${two(sec)}s` : `${m}m${two(sec)}s`;
 }
 
-function firstFrameURL(file, t = 0) {
-  return new Promise((resolve, reject) => {
-    const v = document.createElement("video");
-    v.preload = "auto"; v.muted = true; v.playsInline = true;
-    v.src = URL.createObjectURL(file);
-    const cleanup = () => URL.revokeObjectURL(v.src);
-    let dur = 0;
-
-    const draw = () => {
-      if (!v.videoWidth || !v.videoHeight) return false;
-      const c = document.createElement("canvas");
-      c.width = v.videoWidth; c.height = v.videoHeight;
-      c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-      const frameUrl = c.toDataURL("image/jpeg", 0.9);
-      cleanup(); resolve({ frameUrl, duration: dur }); return true;
-    };
-
-    v.addEventListener("loadedmetadata", () => {
-      dur = Number.isFinite(v.duration) ? v.duration : 0;
-      try { v.currentTime = Math.min(Math.max(t, 0), isFinite(v.duration) ? v.duration : 0); } catch {}
-    }, { once: true });
-
-    v.addEventListener("loadeddata", () => {
-      if (draw()) return;
-      try { v.currentTime = (v.currentTime || 0) + 0.000001; } catch {}
-    }, { once: true });
-
-    v.addEventListener("seeked", () => {
-      if (draw()) return;
-      requestAnimationFrame(() => { if (!draw()) reject(new Error("Could not decode first frame")); });
-    }, { once: true });
-
-    if ("requestVideoFrameCallback" in v) {
-      v.requestVideoFrameCallback(() => { if (draw()) return; });
-    }
-    v.addEventListener("error", () => { cleanup(); reject(v.error || new Error("video load error")); }, { once: true });
-  });
-}
-
 // ----------------------- Event Handlers -----------------------
 async function handleStartTrimClick() {
   if (state.jobId && !state.cancelling) {
@@ -515,15 +460,16 @@ async function handleStartTrimClick() {
 
   DOM.startTrimBtn.disabled = true;
   try {
-    let outPath = state.outputPath || null;
-    if (!outPath && state.defaultOutputDir && state.suggestedName && window.sys?.pathJoin) {
-      const r = await window.sys.pathJoin(state.defaultOutputDir, state.suggestedName);
-      if (r?.ok && r.path) outPath = r.path;
+    const res = await window.sys.chooseSave({ suggestedName: state.suggestedName || "trimmed.mp4" });
+    if (!res.ok || !res.path) {
+      if (!res.cancelled) setStatus("Save cancelled.");
+      setStartBtnIdle();
+      return;
     }
-    const payload = { ...getCurrentSliderValues(), path: state.filePath };
-    if (outPath) payload.out = outPath;
-    const res = await window.py.send("trim", payload);
-    if (!res?.ok) throw new Error(res?.error || "Trim failed to start.");
+
+    const payload = { ...getCurrentSliderValues(), path: state.filePath, out: res.path };
+    const trimRes = await window.py.send("trim", payload);
+    if (!trimRes?.ok) throw new Error(trimRes?.error || "Trim failed to start.");
   } catch (e) {
     console.error(e); setStatus("Error."); setProgress(0); setStartBtnIdle();
   }
@@ -533,33 +479,21 @@ async function handlePickFileClick() {
   if (state.jobId) return;
   resetPostRenderActions();
   try {
-    const res = await window.sys.chooseOpen({});
-    const picked = res?.ok ? (Array.isArray(res.paths) ? res.paths[0] : res.path) : null;
-    if (picked) {
-      await handleFileSelection(picked);
-    } else {
-      DOM.fileInput.click();
+    const res = await window.sys.chooseOpen({ defaultPath: state.defaultInputDir });
+    if (res?.ok && res.paths?.[0]) {
+      await handleFileSelection(res.paths[0]);
     }
   } catch {
     DOM.fileInput.click();
   }
 }
 
-
 async function handleFileInputChange(e) {
   if (state.jobId) return;
   resetPostRenderActions();
   const file = e.target.files?.[0]; if (!file) return;
 
-  try {
-    const { frameUrl } = await firstFrameURL(file);
-    const thumb = DOM.thumb;
-    thumb.classList.remove("skeleton");
-    thumb.style.backgroundImage = `url(${frameUrl})`;
-    thumb.style.backgroundSize = "cover";
-    thumb.style.backgroundPosition = "center";
-  } catch {}
-
+  // The 'file.path' property is only available in Electron environments.
   let backendPath = file.path;
   if (!backendPath) {
     const ab = await file.arrayBuffer();
@@ -569,11 +503,9 @@ async function handleFileInputChange(e) {
   await handleFileSelection(backendPath);
 }
 
-async function handleOutFileClick() {
-  try {
-    const res = await window.sys.chooseSave({ suggestedName: state.suggestedName || "trimmed.mp4" });
-    if (res?.ok && res.path) { state.outputPath = res.path; if (DOM.outMeta) DOM.outMeta.textContent = `Output: ${res.path}`; }
-  } catch (e) { console.error("chooseSave failed", e); }
+function toggleParamView(viewName) {
+  const currentView = DOM.paramCard.classList.contains(`show-${viewName}`) ? "front" : viewName;
+  showParamView(currentView);
 }
 
 function handleAddPreset() {
@@ -595,16 +527,6 @@ function wireRangeEditors() {
       updateRangeFill();
     });
   };
-  makeEditable("rangeLo", (v) => {
-    minDbRange.value = String(v);
-    if (Number(minDbRange.value) > Number(maxDbRange.value)) maxDbRange.value = String(v);
-    minDbRange.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  makeEditable("rangeHi", (v) => {
-    maxDbRange.value = String(v);
-    if (Number(maxDbRange.value) < Number(minDbRange.value)) minDbRange.value = String(v);
-    maxDbRange.dispatchEvent(new Event("input", { bubbles: true }));
-  });
 }
 
 function wireChartContextMenu() {
@@ -625,7 +547,7 @@ function wireChartContextMenu() {
     const approx = xScale?.getValueForPixel(px) ?? 0;
     return Math.min(Number(maxDbRange.max), Math.max(Number(minDbRange.min), Math.round(Number.isFinite(approx) ? approx : 0)));
   };
-  canvas.addEventListener("click", (e) => { try { setRangeFromClick(getClickValue(e)); } catch {} });
+  canvas.addEventListener("click", (e) => { try { setRangeFromClick(getClickValue(e)); } catch { } });
   canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     try {
@@ -634,11 +556,8 @@ function wireChartContextMenu() {
       if (entered == null) return;
       const num = Number(String(entered).replace(/[^-\d.]+/g, ""));
       if (!Number.isFinite(num)) return;
-      const { minDbRange, maxDbRange } = DOM;
-      const loLim = Number(minDbRange.min), hiLim = Number(maxDbRange.max);
-      const val = Math.min(hiLim, Math.max(loLim, Math.round(num)));
-      setRangeFromClick(val);
-    } catch {}
+      setRangeFromClick(num);
+    } catch { }
   });
 }
 
@@ -649,11 +568,10 @@ function wireEventListeners() {
   DOM.startTrimBtn?.addEventListener("click", handleStartTrimClick);
   DOM.pickBtn?.addEventListener("click", handlePickFileClick);
   DOM.fileInput?.addEventListener("change", handleFileInputChange);
-  DOM.outBtn?.addEventListener("click", handleOutFileClick);
 
   toggleViewBtn?.addEventListener("click", () => {
     if (!state.outputPath) return;
-    state.currentView = state.currentView === "raw" ? "cut" : "raw";
+    state.currentView = state.currentYou === "raw" ? "cut" : "raw";
     if (state.currentView === "raw") {
       toggleViewBtn.classList.remove("active");
       toggleViewBtn.title = "Switch to Trimmed video";
@@ -669,13 +587,13 @@ function wireEventListeners() {
     try {
       const res = await window.sys?.chooseDir?.({ title: "Select default input folder", defaultPath: state.defaultInputDir || "" });
       if (res?.ok && res.path) { state.defaultInputDir = res.path; await window.sys?.setSettings?.({ defaultInputDir: res.path }); updateIoSummary(); }
-    } catch {}
+    } catch { }
   });
   DOM.outputDirBtn?.addEventListener("click", async () => {
     try {
       const res = await window.sys?.chooseDir?.({ title: "Select default output folder", defaultPath: state.defaultOutputDir || "" });
       if (res?.ok && res.path) { state.defaultOutputDir = res.path; await window.sys?.setSettings?.({ defaultOutputDir: res.path }); updateIoSummary(); }
-    } catch {}
+    } catch { }
   });
 
   document.querySelectorAll(".vslider").forEach((s) => { updateSliderFill(s); s.addEventListener("input", () => updateSliderFill(s)); });
@@ -741,7 +659,7 @@ function initializePlaceholderChart() {
     const ys = ysRaw.map((v) => (v / total) * 100);
     state.lastXs = xs; state.lastYs = ys;
     renderHist(xs, ys, -50, -5);
-  } catch {}
+  } catch { }
 }
 
 async function initializeApp() {

@@ -13,7 +13,7 @@ PARAM_CONFIG = {
 }
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
-JOBS = {}  # job_id -> {"cancel": threading.Event(), "thread": Thread}
+JOBS = {}  
 
 def cleanup_old_partials():
     """Deletes partial files older than 24 hours from the temp directory."""
@@ -22,7 +22,7 @@ def cleanup_old_partials():
         if not os.path.isdir(partial_dir):
             return
 
-        cutoff = time.time() - (24 * 60 * 60)  # 24 hours ago
+        cutoff = time.time() - (24 * 60 * 60)  
 
         for filename in os.listdir(partial_dir):
             if ".partial" in filename:
@@ -31,10 +31,8 @@ def cleanup_old_partials():
                     if os.path.getmtime(file_path) < cutoff:
                         os.remove(file_path)
                 except OSError:
-                    # File might be in use or already deleted
                     pass
     except Exception:
-        # Do not crash the app if cleanup fails for any reason
         pass
 
 def _has_nvenc():
@@ -162,11 +160,14 @@ def cmd_trim(payload):
     pad     = float(payload.get("pad",      PARAM_CONFIG["pad"]["default"]))
     keep    = float(payload.get("keep",     PARAM_CONFIG["keep"]["default"]))
     path    = payload.get("path")
+    out     = payload.get("out") # Get output path from UI
 
     if not path or not os.path.exists(path):
         return {"ok": False, "error": f"Input file not found: {path!r}"}
     if not os.access(path, os.R_OK):
         return {"ok": False, "error": f"Cannot read input file: {path!r}"}
+    if not out:
+        return {"ok": False, "error": "Output path was not provided by the UI."}
 
     try:
         subprocess.run(["ffmpeg","-version"], capture_output=True, check=True,
@@ -178,14 +179,15 @@ def cmd_trim(payload):
     if pad < 0:      return {"ok": False, "error": "Pad duration cannot be negative"}
     if keep <= 0:    return {"ok": False, "error": "Keep threshold must be positive"}
 
-    # ---------- Output path ----------
-    out = payload.get("out")
-    if not out:
-        base = os.path.splitext(os.path.basename(path))[0]
-        n = abs(int(noise)); s = int(silence * 100); p = int(pad * 100); k = int(keep * 100)
-        out = os.path.join(os.path.expanduser("~"), "Downloads", f"{base}-N{n}-S{s}-P{p}-C{k}.mp4")
+    # ---------- Automatic File Renaming Logic ----------
     try:
-        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        directory, filename = os.path.split(out)
+        base_name, extension = os.path.splitext(filename)
+        counter = 2
+        while os.path.exists(out):
+            new_filename = f"{base_name}-{counter}{extension}"
+            out = os.path.join(directory, new_filename)
+            counter += 1
     except Exception:
         pass
 
@@ -282,7 +284,6 @@ def cmd_trim(payload):
 
             # Multi-clip concat
             else:
-                # --- Multi-clip concat path (replace your current block) ---
                 render_len = total_dur
                 vf_parts, af_parts = [], []
 
@@ -291,12 +292,10 @@ def cmd_trim(payload):
                         f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{idx}]"
                     )
                     if has_audio:
-                        # aresample keeps timestamps sane across cuts
                         af_parts.append(
                             f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS,aresample=async=1[a{idx}]"
                         )
 
-                # Interleave inputs per segment: [v0][a0][v1][a1]...
                 concat_inputs = []
                 for idx in range(len(clips)):
                     concat_inputs.append(f"[v{idx}]")
@@ -332,11 +331,9 @@ def cmd_trim(payload):
                     tmp_out
                 ]
 
-
                 rc, stderr_txt = trim.run_ffmpeg_progress(
                     cmd, total=render_len, desc="render", on_progress=on_render
                 )
-
 
                 if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
                 if rc != 0:
@@ -388,7 +385,6 @@ def cmd_cancel(payload):
     job_id = payload.get("job")
     j = JOBS.get(job_id)
     if not j:
-        # Nothing to cancel (already done or invalid id)
         send("job", id=job_id, status="cancelled", kind="unknown")
         return {"ok": True}
     try:
@@ -412,20 +408,17 @@ def cmd_probe(payload):
         return {"ok": False, "error": f"Input file not found: {path!r}"}
     try:
         dur = trim.ffprobe_duration(path)
-        # bytes -> MB (2 decimals)
         size_mb = round(os.path.getsize(path) / (1024*1024), 2)
         return {"ok": True, "duration": float(dur), "size_mb": size_mb}
     except Exception as e:
         return {"ok": False, "error": f"ffprobe failed: {e}"}
 
 def main():
-    # Run cleanup once at startup
     try:
         cleanup_old_partials()
     except Exception:
         pass
 
-    # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, cleanup_and_exit)
     signal.signal(signal.SIGINT, cleanup_and_exit)
 
@@ -458,5 +451,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import numpy as np
     main()

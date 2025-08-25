@@ -1,7 +1,6 @@
 # python/trim.py
-import argparse, os, re, subprocess, sys, threading, time, math, signal
+import os, re, subprocess, sys, threading, time, math, signal
 from typing import List, Tuple
-from collections import Counter
 from queue import Queue, Empty
 import atexit
 
@@ -12,14 +11,8 @@ except ImportError:
     sys.exit(1)
 
 # ---- Globals -----------------------------------------------------------------
-
 CANCEL = threading.Event()
-# A global list to track and manage active ffmpeg subprocesses
 ACTIVE_PROCESSES = []
-
-STDERR_TIME_RE = re.compile(r'time=(\d{2}):(\d{2}):(\d{2})[.,](\d{2})')
-
-
 
 # ---- Small utilities ---------------------------------------------------------
 
@@ -41,17 +34,16 @@ def kill_all_active_processes():
 
 atexit.register(kill_all_active_processes)
 
-def _positive_float(x: str) -> float:
-    f = float(x)
-    if not math.isfinite(f) or f <= 0.0:
-        raise argparse.ArgumentTypeError("--bins must be a positive, finite number")
-    return f
+def _noise_for_ffmpeg(noise: str) -> str:
+    s = str(noise).strip()
+    if not s.lower().endswith("db"):
+        s += "dB"
+    if re.fullmatch(r"\d+(?:\.\d+)?dB", s, re.I):
+        s = "-" + s
+    return s
 
 def _popen_creation_flags():
-    """
-    Returns Popen kwargs for creating a process that can be reliably
-    terminated as a group, and with a hidden window on Windows.
-    """
+    """Returns Popen kwargs for a hidden window on Windows."""
     if os.name == "nt":
         CREATE_NO_WINDOW = 0x08000000
         CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -82,9 +74,6 @@ def ffprobe_duration(path: str) -> float:
         text=True, startupinfo=si, creationflags=flags
     ).strip())
 
-def _hms_cs_to_seconds(h, m, s, cs) -> float:
-    return int(h)*3600 + int(m)*60 + int(s) + int(cs)/100.0
-
 # ---- FFmpeg execution with progress ------------------------------------------
 
 def _parse_progress_time(val: str):
@@ -104,11 +93,7 @@ def _parse_progress_time(val: str):
         return None
 
 def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
-                        on_progress=None, on_rms=None) -> Tuple[int, str]:
-    """
-    Run ffmpeg with progress, reading stdout and stderr concurrently on threads
-    to avoid deadlocks. Explicitly sets stdin to DEVNULL to prevent hangs.
-    """
+                        on_progress=None) -> Tuple[int, str]:
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL, 
@@ -137,9 +122,6 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
         stderr_buf = []
         stdout_closed = False
         stderr_closed = False
-        last_progress_time = time.time()
-
-        rms_pat = re.compile(r"lavfi\.astats\.(?:Overall\.)?RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)") if on_rms else None
 
         if on_progress:
             try: on_progress(0.0)
@@ -155,9 +137,6 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
                     proc.wait(timeout=5)
                 except Exception:
                     proc.kill()
-                finally:
-                    while not q_out.empty(): q_out.get_nowait()
-                    while not q_err.empty(): q_err.get_nowait()
                 raise RuntimeError("CANCELLED")
 
             try:
@@ -173,7 +152,6 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
                             if tval is not None and total > 0 and on_progress:
                                 frac = max(0.0, min(1.0, tval / total))
                                 on_progress(frac)
-                                last_progress_time = time.time()
                         elif key == "progress" and val == "end" and on_progress:
                             on_progress(1.0)
             except Empty:
@@ -185,14 +163,10 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
                     stderr_closed = True
                 else:
                     stderr_buf.append(line_err)
-                    if on_rms and rms_pat and (m := rms_pat.search(line_err)):
-                        on_rms(float(m.group(1)))
-            except (Empty, ValueError):
+            except Empty:
                 pass
-
+            
             if q_out.empty() and q_err.empty():
-                if on_progress and (time.time() - last_progress_time) > 2.0 and total > 0 and not stdout_closed:
-                    on_progress(0.001)
                 time.sleep(0.05)
 
         proc.wait()
@@ -201,51 +175,7 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
         if proc in ACTIVE_PROCESSES:
             ACTIVE_PROCESSES.remove(proc)
 
-# ---- CLI args / filenames -----------------------------------------------------
-
-def parse_args():
-    p = argparse.ArgumentParser(description="Cut low-volume pauses from video (single re-encode).")
-    p.add_argument("input", help="Input video file")
-    p.add_argument("--noise", default="-20dB", help="Silence threshold, e.g. -35dB / -40dB")
-    p.add_argument("--silence", type=float, default=0.5, help="Min silence duration (sec)")
-    p.add_argument("--pad", type=float, default=0.15, help="Pad before/after speech (sec)")
-    p.add_argument("--keep", type=float, default=0.25, help="Drop kept clips shorter than this (sec)")
-    p.add_argument("--outdir", default="out", help="Output directory")
-    p.add_argument("--hist", action="store_true", help="Generate histogram of RMS levels")
-    p.add_argument("--bins", "--bin", dest="bins", type=_positive_float, default=1.0,
-                   help="Histogram bin width in dB (e.g., 0.5, 1, 2)")
-    p.add_argument("--min_db", type=int, default=-60, help="Minimum dB for histogram")
-    p.add_argument("--max_db", type=int, default=0, help="Maximum dB for histogram")
-    return p.parse_args()
-
-def build_output_name(input_path, args):
-    base = os.path.splitext(os.path.basename(input_path))[0]
-    noise_val = str(args.noise).lower()
-    return f"{base}_{noise_val}.mp4"
-
 # ---- Silence detection / segments --------------------------------------------
-
-def _noise_for_ffmpeg(noise: str) -> str:
-    s = str(noise).strip()
-    if not s.lower().endswith("db"):
-        s += "dB"
-    if re.fullmatch(r"\d+(?:\.\d+)?dB", s, re.I):
-        s = "-" + s
-    return s
-
-def detect_silences(input_path: str, noise: str, min_silence: float,
-                    dur: float) -> Tuple[List[float], List[float], str]:
-    noise_norm = _noise_for_ffmpeg(noise)
-    cmd = [
-        "ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y",
-        "-i", input_path,
-        "-af", f"silencedetect=noise={noise_norm}:d={min_silence}",
-        "-f","null","-"
-    ]
-    rc, txt = run_ffmpeg_progress(cmd, dur, "detect")
-    starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+(?:\.\d+)?)", txt)]
-    ends   = [float(x) for x in re.findall(r"silence_end:\s*(\d+(?:\.\d+)?)",   txt)]
-    return starts, ends, txt
 
 def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
                             pad: float, keep: float) -> List[Tuple[float, float]]:
@@ -278,73 +208,16 @@ def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
 
     return [(s, e) for s, e in padded if (e - s) >= keep]
 
-# ---- Cutting & concatenation (single encode) ---------------------------------
-
-def cut_and_concat(input_path: str, segments: List[Tuple[float, float]],
-                   output_path: str, progress=None):
-    def _coalesce(segs, eps=0.03):
-        if not segs: return []
-        out = []
-        for s, e in sorted(segs):
-            if not out or s > out[-1][1] + eps:
-                out.append([s, e])
-            else:
-                out[-1][1] = max(out[-1][1], e)
-        return [(round(s, 3), round(e, 3)) for s, e in out]
-
-    clips = [(max(0.0, s), max(0.0, e - 0.010)) for s, e in _coalesce(segments) if (e - s) > 0.010]
-    if not clips:
-        print("No valid segments to cut.")
-        sys.exit(0)
-
-    vf, af = [], []
-    for i, (st, et) in enumerate(clips):
-        vf.append(f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{i}]")
-        af.append(f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
-    cat = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
-    filter_complex = ";".join(vf + af + [f"{cat}concat=n={len(clips)}:v=1:a=1[v][a]"])
-
-    total_len = sum(et - st for st, et in clips)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-
-    cmd = [
-        "ffmpeg","-hide_banner","-nostats","-progress","pipe:1","-y",
-        "-i", input_path,
-        "-filter_complex", filter_complex,
-        "-map","[v]","-map","[a]",
-        "-c:v","libx264","-preset","veryfast","-crf","20",
-        "-c:a","aac","-b:a","160k",
-        "-movflags","+faststart",
-        output_path
-    ]
-
-    rc, _ = run_ffmpeg_progress(cmd, total_len, "render", on_progress=progress)
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
-
-def trim_video(input_path: str, noise: str, silence: float, pad: float,
-               keep: float, output_path: str, progress=None) -> str:
-    dur = ffprobe_duration(input_path)
-    starts, ends, _ = detect_silences(input_path, noise, silence, dur)
-    segments = build_speaking_segments(starts, ends, dur, pad, keep)
-    if not segments:
-        raise RuntimeError("No keepable segments; nothing to output.")
-    cut_and_concat(input_path, segments, output_path, progress)
-    return output_path
-
-# ---- NEW, ROBUST HISTOGRAM ANALYSIS ------------------------------------------
+# ---- Histogram Analysis ------------------------------------------------------
 
 def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]:
     """
     Analyzes audio levels by decoding the audio to raw PCM and calculating RMS
-    values in Python with numpy. This method is highly reliable and avoids
-    buggy FFmpeg filters.
+    values in Python with numpy. This method is highly reliable.
     """
     vals = []
-    sample_rate = 8000  # Downsample for faster processing
-    chunk_duration = 0.05  # 50ms chunks (20 chunks per second)
-    
-    # Each sample is 16-bit signed integer (2 bytes)
+    sample_rate = 8000
+    chunk_duration = 0.05
     bytes_per_sample = 2
     chunk_size = int(sample_rate * chunk_duration * bytes_per_sample)
     total_bytes = int(dur * sample_rate * bytes_per_sample)
@@ -352,11 +225,11 @@ def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]
     cmd = [
         "ffmpeg", "-hide_banner", "-y",
         "-i", input_path,
-        "-f", "s16le",             # Format: signed 16-bit little-endian PCM
-        "-ac", "1",                # Channels: 1 (mono)
-        "-ar", str(sample_rate),   # Sample rate
+        "-f", "s16le",
+        "-ac", "1",
+        "-ar", str(sample_rate),
         "-nostats",
-        "-"                        # Output to stdout
+        "-"
     ]
 
     proc = subprocess.Popen(
@@ -376,21 +249,15 @@ def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]
                 break
             
             bytes_read += len(chunk)
-            
-            # Convert binary chunk to numpy array of integers
             samples = np.frombuffer(chunk, dtype=np.int16)
             
             if samples.size > 0:
-                # Calculate RMS (Root Mean Square)
                 rms = np.sqrt(np.mean(np.square(samples.astype(np.float64))))
-                
-                # Convert RMS to dBFS (decibels relative to full scale)
-                # 32767.0 is the maximum possible value for a 16-bit signed integer
                 if rms > 0:
                     db = 20 * math.log10(rms / 32767.0)
                     vals.append(db)
                 else:
-                    vals.append(-120.0) # Effectively negative infinity for silence
+                    vals.append(-120.0)
 
             if on_progress and total_bytes > 0:
                 frac = min(1.0, bytes_read / total_bytes)
@@ -398,16 +265,13 @@ def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]
         
         if CANCEL.is_set():
             raise RuntimeError("CANCELLED")
-
     finally:
-        # Ensure the process is terminated
         try:
             proc.kill()
         except:
             pass
         if proc in ACTIVE_PROCESSES:
             ACTIVE_PROCESSES.remove(proc)
-        # Drain pipes to prevent deadlocks on process exit
         proc.stdout.read()
         proc.stderr.read()
         proc.wait()
@@ -421,95 +285,3 @@ def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]
         raise RuntimeError("Audio analysis failed: FFmpeg produced no audio data.")
 
     return vals
-
-
-def plot_histogram(vals: List[float], binsize: float, min_db: float, max_db: float, outpath: str):
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib.ticker import PercentFormatter
-    except Exception as e:
-        print(f"[hist] Plotting requires numpy and matplotlib: {e}")
-        return
-
-    vals = [v for v in vals if math.isfinite(v)]
-    if not vals:
-        print("[hist] No audio levels found, skipping histogram.")
-        return
-
-    tenth = [round(v, 1) for v in vals]
-    b = float(binsize)
-    lo, hi = float(min_db), float(max_db)
-
-    def bin_start(x):
-        return round(lo + math.floor((x - lo) / b) * b, 1)
-
-    bin_counts = Counter()
-    for x in tenth:
-        if lo <= x <= hi:
-            bin_counts[bin_start(x)] += 1
-
-    edges = []
-    e = lo
-    while e <= hi + 1e-9:
-        edges.append(round(e, 1))
-        e += b
-
-    counts = [bin_counts.get(s, 0) for s in edges[:-1]]
-    total = sum(counts) or 1
-    percent = [c / total * 100.0 for c in counts]
-
-    plt.figure(figsize=(11, 4))
-    try:
-        plt.stairs(percent, edges, fill=True, linewidth=0.8)
-    except Exception:
-        plt.bar(edges[:-1], percent, width=b, align="edge", linewidth=0.4)
-
-    ax = plt.gca()
-    ax.grid(True, axis="y", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.grid(True, axis="x", linestyle=":", linewidth=0.4, alpha=0.35)
-    ax.set_axisbelow(True)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    ax.yaxis.set_major_formatter(PercentFormatter())
-    ax.set_xticks(np.arange(math.ceil(lo), math.floor(hi) + 1, 1.0))
-    plt.xticks(rotation=90)
-
-    plt.xlabel(f"RMS Level (dBFS) — bin width {b:.1f} dB")
-    plt.ylabel("Percent of frames")
-    plt.title("Audio Loudness Distribution (RMS, per-frame)")
-    plt.tight_layout(pad=0.8)
-    plt.savefig(outpath)
-    plt.close()
-    print(f"[hist] Histogram saved to {outpath}")
-
-# ---- CLI ---------------------------------------------------------------------
-
-def main():
-    a = parse_args()
-    os.makedirs(a.outdir, exist_ok=True)
-
-    dur = ffprobe_duration(a.input)
-    out_final = os.path.join(a.outdir, build_output_name(a.input, a))
-
-    if a.hist:
-        vals = analyze_levels(a.input, dur)
-        plot_histogram(
-            vals, a.bins, a.min_db, a.max_db,
-            os.path.join(a.outdir, os.path.splitext(os.path.basename(out_final))[0] + "_hist.png"),
-        )
-
-    try:
-        trim_video(a.input, a.noise, a.silence, a.pad, a.keep, out_final)
-    except RuntimeError as e:
-        print(e)
-
-    starts, ends, _ = detect_silences(a.input, a.noise, a.silence, dur)
-    segments = build_speaking_segments(starts, ends, dur, a.pad, a.keep)
-    if not segments:
-        print("No keepable segments; nothing to output.")
-        sys.exit(0)
-
-    print(f"✔ Wrote {out_final}")
-
-if __name__ == "__main__":
-    main()
