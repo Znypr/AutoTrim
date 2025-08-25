@@ -234,7 +234,7 @@ function setStartBtnIdle() {
 }
 
 function setStartBtnActive() {
-  const b = DOM.startTrimBtn; b.classList.add("danger"); b.textContent = "Cancel Batch"; b.disabled = false;
+  const b = DOM.startTrimBtn; b.classList.add("danger"); b.textContent = "Cancel"; b.disabled = false;
 }
 
 function setStartBtnCancelling() {
@@ -649,6 +649,11 @@ function showPrompt({ title, defaultValue = '' }) {
   });
 }
 
+function toggleParamView(viewName) {
+  const currentView = DOM.paramCard.classList.contains(`show-${viewName}`) ? "front" : viewName;
+  showParamView(currentView);
+}
+
 function showConfirm({ title, message }) {
   return new Promise((resolve) => {
     DOM.confirmTitle.textContent = title;
@@ -723,8 +728,8 @@ function wireEventListeners() {
     });
   });
 
-  DOM.paramInfoBtn?.addEventListener("click", () => showParamView("info"));
-  DOM.viewPresetsBtn?.addEventListener("click", () => showParamView("presets"));
+  DOM.paramInfoBtn?.addEventListener("click", () => toggleParamView("info"));
+  DOM.viewPresetsBtn?.addEventListener("click", () => toggleParamView("presets"));
   DOM.addPresetBtn?.addEventListener("click", handleAddPreset);
   DOM.resetParamsBtn?.addEventListener("click", loadAndApplyParams);
   DOM.applyNoiseBtn?.addEventListener("click", () => {
