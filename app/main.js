@@ -112,7 +112,7 @@ function pyRequest(payload) {
 function createWindow() {
   const win = new BrowserWindow({
     width: 1050,
-    height: 410,
+    height: 430,
     show: false,
     resizable: false,
     backgroundColor: '#121212',

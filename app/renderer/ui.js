@@ -69,6 +69,19 @@ const paramMap = {
   keep: { slider: "#keepS" },
 };
 
+const DEFAULT_PRESETS = [
+  {
+    id: 'default_cinematic',
+    title: 'Cinematic',
+    settings: { noise_db: -25.0, silence: 0.2, pad: 0.15, keep: 0.75 }
+  },
+  {
+    id: 'default_tiktok',
+    title: 'TikTok',
+    settings: { noise_db: -20.0, silence: 0.1, pad: 0.0, keep: 0.3 }
+  }
+];
+
 function initializeBackendEventHandler() {
   window.py.onEvent((msg) => {
     if (msg.event === "progress") handleProgressUpdate(msg);
@@ -367,23 +380,36 @@ async function loadSettings() {
     const st = res?.settings || {};
     state.defaultInputDir = typeof st.defaultInputDir === "string" ? st.defaultInputDir : null;
     state.defaultOutputDir = typeof st.defaultOutputDir === "string" ? st.defaultOutputDir : null;
-    state.presets = Array.isArray(st.presets) ? st.presets : [];
+    
+    const userPresets = Array.isArray(st.presets) ? st.presets : [];
+    state.presets = [...DEFAULT_PRESETS, ...userPresets];
+
     renderPresets();
     updateIoSummary();
   } catch {}
 }
-async function savePresets() { await window.sys.setSettings({ presets: state.presets }); }
+
+async function savePresets() { 
+  const userPresets = state.presets.filter(p => !String(p.id).startsWith('default_'));
+  await window.sys.setSettings({ presets: userPresets }); 
+}
 
 function renderPresets() {
   const list = DOM.presetList, tpl = DOM.presetItemTemplate;
   if (!list || !tpl) return;
-  list.innerHTML = state.presets.length ? "" : `<li class="preset-item-empty">No presets saved.</li>`;
+  list.innerHTML = state.presets.length > 1 ? "" : `<li class="preset-item-empty">No presets saved.</li>`;
+  
   state.presets.forEach((p) => {
     const item = tpl.content.cloneNode(true).querySelector(".preset-item");
     item.querySelector(".preset-title").textContent = p.title;
     item.addEventListener("click", () => { applyPreset(p.id); showParamView("front"); });
-    item.querySelector(".preset-edit").addEventListener("click", (e) => { e.stopPropagation(); editPreset(p.id); });
-    item.querySelector(".preset-delete").addEventListener("click", (e) => { e.stopPropagation(); deletePreset(p.id); });
+
+    if (String(p.id).startsWith('default_')) {
+        item.querySelector('.preset-actions').remove();
+    } else {
+        item.querySelector(".preset-edit").addEventListener("click", (e) => { e.stopPropagation(); editPreset(p.id); });
+        item.querySelector(".preset-delete").addEventListener("click", (e) => { e.stopPropagation(); deletePreset(p.id); });
+    }
     list.appendChild(item);
   });
 }

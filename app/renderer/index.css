@@ -198,7 +198,7 @@ body {
   background: var(--card);
   border-radius: 16px;
   padding: 14px;
-  min-height: var(--panelH);
+  height: var(--panelH);
 
 }
 
@@ -564,8 +564,26 @@ body {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
+  min-height: 0;
 }
 
+.preset-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.preset-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.preset-list::-webkit-scrollbar-thumb {
+  background-color: #4f4f4f;
+  border-radius: 999px;
+  border: 2px solid var(--card);
+}
+
+.preset-list::-webkit-scrollbar-thumb:hover {
+  background-color: #6a6a6a;
+}
 
 
 .preset-list {
@@ -573,6 +591,8 @@ body {
   margin: 0;
   padding: 0;
   overflow-y: auto; 
+  scrollbar-width: thin;
+  scrollbar-color: #4f4f4f var(--card);
 }
 
 .preset-item {
