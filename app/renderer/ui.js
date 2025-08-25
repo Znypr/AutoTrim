@@ -229,7 +229,6 @@ function setStartBtnCancelling() {
 }
 
 async function displayVideo(index) {
-    // If no valid file is selected, disable action buttons
     if (index < 0 || index >= state.files.length) {
         DOM.showBtn.disabled = true;
         DOM.playBtn.disabled = true;
@@ -243,13 +242,11 @@ async function displayVideo(index) {
     state.currentIndex = index;
     const file = state.files[index];
 
-    // Enable the main action buttons and point them to the source file
     DOM.showBtn.disabled = false;
     DOM.playBtn.disabled = false;
     DOM.showBtn.onclick = () => window.sys.showInFolder(file.path);
     DOM.playBtn.onclick = () => window.sys.openFile(file.path);
 
-    // Show/hide the toggle button based on whether the file is trimmed
     if (file.outPath && file.status === 'finished') {
         DOM.toggleViewBtn.style.display = 'inline-block';
         DOM.toggleViewBtn.disabled = false;
@@ -258,20 +255,16 @@ async function displayVideo(index) {
         DOM.toggleViewBtn.disabled = true;
     }
 
-    // Always reset to the raw preview when switching files
     state.currentPreview = 'raw';
     DOM.toggleViewBtn.classList.remove('active');
     DOM.toggleViewBtn.title = "Switch to Trimmed";
 
-    // Update Nav
     DOM.navStatus.textContent = `${index + 1} of ${state.files.length}`;
     DOM.prevBtn.disabled = index === 0;
     DOM.nextBtn.disabled = index === state.files.length - 1;
 
-    // Update thumbnail and metadata to show the RAW file
     await displayFileInformation(file.path);
 
-    // Handle histogram
     if (file.analysis) {
         renderHist(file.analysis.xs, file.analysis.ys);
         setStatus("Ready.");
