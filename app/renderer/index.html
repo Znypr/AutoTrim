@@ -134,8 +134,32 @@
     </div>
   </div>
 
+  <div id="customPrompt" class="modal-overlay">
+    <div class="modal-content">
+      <div id="promptTitle" class="modal-title">Rename Preset</div>
+      <input id="promptInput" type="text" class="modal-input" />
+      <div class="modal-actions">
+        <button id="promptCancelBtn" class="btn">Cancel</button>
+        <button id="promptSaveBtn" class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="customConfirm" class="modal-overlay">
+    <div class="modal-content">
+      <div id="confirmTitle" class="modal-title">Confirm Deletion</div>
+      <p id="confirmMessage" class="modal-message">Are you sure?</p>
+      <div class="modal-actions">
+        <button id="confirmCancelBtn" class="btn">Cancel</button>
+        <button id="confirmOkBtn" class="btn danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <script src="../node_modules/chart.js/dist/chart.umd.js"></script>
   <script src="ui.js"></script>
+</body>
+
 </body>
 
 </html>

@@ -50,6 +50,16 @@ const DOM = {
   histChartCanvas: $("#histChart"),
   rangeWrap: $(".range-wrap"),
   rangeFill: $("#rangeFill"),
+  customPrompt: $("#customPrompt"),
+  promptTitle: $("#promptTitle"),
+  promptInput: $("#promptInput"),
+  promptCancelBtn: $("#promptCancelBtn"),
+  promptSaveBtn: $("#promptSaveBtn"),
+  customConfirm: $("#customConfirm"),
+  confirmTitle: $("#confirmTitle"),
+  confirmMessage: $("#confirmMessage"),
+  confirmCancelBtn: $("#confirmCancelBtn"),
+  confirmOkBtn: $("#confirmOkBtn"),
 };
 
 const paramMap = {
@@ -127,6 +137,68 @@ function handleJobStatusUpdate(msg) {
       setProgress(0);
       return;
   }
+}
+
+function showConfirm({ title, message }) {
+  return new Promise((resolve) => {
+    DOM.confirmTitle.textContent = title;
+    DOM.confirmMessage.textContent = message;
+    DOM.customConfirm.classList.add("visible");
+    DOM.confirmOkBtn.focus(); // Focus the confirmation button
+
+    const cleanup = (value) => {
+      DOM.customConfirm.classList.remove("visible");
+      DOM.confirmOkBtn.onclick = null;
+      DOM.confirmCancelBtn.onclick = null;
+      document.removeEventListener('keydown', handleKey);
+      resolve(value);
+    };
+
+    const handleKey = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        cleanup(true); // 'Enter' confirms
+      } else if (e.key === 'Escape') {
+        cleanup(false); // 'Escape' cancels
+      }
+    };
+
+    DOM.confirmOkBtn.onclick = () => cleanup(true);
+    DOM.confirmCancelBtn.onclick = () => cleanup(false);
+    document.addEventListener('keydown', handleKey);
+  });
+}
+
+function showPrompt({ title, defaultValue = '' }) {
+  return new Promise((resolve) => {
+    DOM.promptTitle.textContent = title;
+    DOM.promptInput.value = defaultValue;
+    DOM.customPrompt.classList.add("visible");
+    DOM.promptInput.focus();
+    DOM.promptInput.select();
+
+    const cleanup = (value) => {
+      DOM.customPrompt.classList.remove("visible");
+      // Detach event handlers to prevent memory leaks
+      DOM.promptSaveBtn.onclick = null;
+      DOM.promptCancelBtn.onclick = null;
+      document.removeEventListener('keydown', handleKey);
+      resolve(value);
+    };
+    
+    const handleKey = (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault(); // Prevents form submission
+            cleanup(DOM.promptInput.value);
+        } else if (e.key === 'Escape') {
+            cleanup(null); // Treat Escape as a cancellation
+        }
+    };
+
+    DOM.promptSaveBtn.onclick = () => cleanup(DOM.promptInput.value);
+    DOM.promptCancelBtn.onclick = () => cleanup(null);
+    document.addEventListener('keydown', handleKey, { once: false });
+  });
 }
 
 async function startAnalysisJob(path) {
@@ -308,15 +380,33 @@ function applyPreset(id) {
   }
 }
 
-function editPreset(id) {
+async function editPreset(id) {
   const p = state.presets.find((x) => x.id === id); if (!p) return;
-  const t = prompt("Enter a new name for the preset:", p.title);
-  if (t && t.trim()) { p.title = t.trim(); savePresets(); renderPresets(); }
-}
+  
+  const newTitle = await showPrompt({
+    title: "Enter a new preset name",
+    defaultValue: p.title
+  });
 
-function deletePreset(id) {
+  if (newTitle !== null && newTitle.trim()) {
+    p.title = newTitle.trim();
+    savePresets();
+    renderPresets();
+  }
+}
+async function deletePreset(id) {
   const p = state.presets.find((x) => x.id === id); if (!p) return;
-  if (confirm(`Delete preset "${p.title}"?`)) { state.presets = state.presets.filter((x) => x.id !== id); savePresets(); renderPresets(); }
+
+  const confirmed = await showConfirm({
+    title: "Confirm Deletion",
+    message: `Are you sure you want to delete the preset "${p.title}"? This action cannot be undone.`
+  });
+
+  if (confirmed) {
+    state.presets = state.presets.filter((x) => x.id !== id);
+    savePresets();
+    renderPresets();
+  }
 }
 
 // ----------------------- Chart & Ranges -----------------------
@@ -366,7 +456,7 @@ function handleAnalysisResult(data) {
   DOM.noiseDbSlider.min = String(lo);
   DOM.noiseDbSlider.max = String(hi);
 
-  DOM.noiseDbSlider.value = String(Math.round((lo + hi) / 2));
+  //DOM.noiseDbSlider.value = String(Math.round((lo + hi) / 2));
   DOM.noiseDbSlider.dispatchEvent(new Event("input"));
 
   DOM.minDbRange.value = String(Math.max(lo, Math.round(min)));
@@ -460,9 +550,9 @@ async function handleStartTrimClick() {
 
   DOM.startTrimBtn.disabled = true;
   try {
-    const res = await window.sys.chooseSave({ suggestedName: state.suggestedName || "trimmed.mp4" });
+    const res = await window.sys.getDefaultSavePath({ suggestedName: state.suggestedName || "trimmed.mp4" });
     if (!res.ok || !res.path) {
-      if (!res.cancelled) setStatus("Save cancelled.");
+      setStatus("Error: Could not determine output path.");
       setStartBtnIdle();
       return;
     }
@@ -509,9 +599,11 @@ function toggleParamView(viewName) {
 }
 
 function handleAddPreset() {
-  const title = prompt("Enter a name for this preset:"); if (!title || !title.trim()) return;
-  state.presets.push({ id: Date.now(), title: title.trim(), settings: getCurrentSliderValues() });
-  savePresets(); renderPresets(); showParamView("presets");
+  const title = `Preset ${state.presets.length + 1}`;
+  state.presets.push({ id: Date.now(), title: title, settings: getCurrentSliderValues() });
+  savePresets();
+  renderPresets();
+  showParamView("presets");
 }
 
 // ----------------------- Chart UX -----------------------
@@ -571,7 +663,7 @@ function wireEventListeners() {
 
   toggleViewBtn?.addEventListener("click", () => {
     if (!state.outputPath) return;
-    state.currentView = state.currentYou === "raw" ? "cut" : "raw";
+    state.currentView = state.currentView === "raw" ? "cut" : "raw";
     if (state.currentView === "raw") {
       toggleViewBtn.classList.remove("active");
       toggleViewBtn.title = "Switch to Trimmed video";

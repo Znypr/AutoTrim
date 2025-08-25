@@ -6,9 +6,9 @@ import threading, uuid, re
 import collections, math
 
 PARAM_CONFIG = {
-    "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -35.0},
+    "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -25.0},
     "silence":  {"min": 0.1,   "max": 1.0,   "step": 0.1, "default": 0.1},
-    "pad":      {"min": 0.0,   "max": 1.0,   "step": 0.01,"default": 0.12},
+    "pad":      {"min": 0.0,   "max": 1.0,   "step": 0.01,"default": 0.10},
     "keep":     {"min": 0.1,   "max": 1.0,   "step": 0.05, "default": 0.50},
 }
 
@@ -181,16 +181,16 @@ def cmd_trim(payload):
 
     # ---------- Automatic File Renaming Logic ----------
     try:
-        directory, filename = os.path.split(out)
-        base_name, extension = os.path.splitext(filename)
-        counter = 2
-        while os.path.exists(out):
-            new_filename = f"{base_name}-{counter}{extension}"
-            out = os.path.join(directory, new_filename)
-            counter += 1
+        if os.path.exists(out):
+            directory, filename = os.path.split(out)
+            base_name, extension = os.path.splitext(filename)
+            counter = 2
+            while os.path.exists(out):
+                new_filename = f"{base_name}-{counter}{extension}"
+                out = os.path.join(directory, new_filename)
+                counter += 1
     except Exception:
         pass
-
     # ---------- Job bookkeeping ----------
     job_id    = _new_job_id()
     cancel_ev = threading.Event()

@@ -195,6 +195,18 @@ ipcMain.handle('sys:chooseDir', async (_evt, opts = {}) => {
   }
 });
 
+ipcMain.handle('sys:getDefaultSavePath', (_evt, opts = {}) => {
+  try {
+    const suggested = String(opts.suggestedName || 'trimmed.mp4');
+    const st = readSettings();
+    const baseDir = typeof st.defaultOutputDir === 'string' && st.defaultOutputDir ? st.defaultOutputDir : app.getPath('downloads');
+    const defPath = path.join(baseDir, suggested);
+    return { ok: true, path: defPath };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.handle('sys:getSettings', async () => {
   const st = readSettings();
   return { ok: true, settings: st };

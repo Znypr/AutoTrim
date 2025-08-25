@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('py', {
 // System helpers
 contextBridge.exposeInMainWorld('sys', {
   chooseSave: (opts = {}) => ipcRenderer.invoke('sys:chooseSave', opts),
+  getDefaultSavePath: (opts = {}) => ipcRenderer.invoke('sys:getDefaultSavePath', opts),
   chooseOpen: (opts = {}) => ipcRenderer.invoke('sys:chooseOpen', opts),
   chooseDir:  (opts = {}) => ipcRenderer.invoke('sys:chooseDir', opts),
   getSettings: () => ipcRenderer.invoke('sys:getSettings'),
