@@ -137,7 +137,8 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
         stdout_closed = False
         stderr_closed = False
         last_progress_time = time.time()
-        rms_pat = re.compile(r"lavfi\.astats\.(?:\d+|Overall)\.RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)") if on_rms else None
+
+        rms_pat = re.compile(r"lavfi\.astats\.(?:Overall\.)?RMS_level(?:=|:\s*)([-+]?\d+(?:\.\d+)?)") if on_rms else None
 
         if on_progress:
             try: on_progress(0.0)
@@ -163,15 +164,17 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
                 if line_out is None:
                     stdout_closed = True
                 else:
-                    key, val = line_out.strip().split("=", 1)
-                    if key in ("out_time_ms", "out_time_us", "out_time"):
-                        tval = _parse_progress_time(val)
-                        if tval is not None and total > 0 and on_progress:
-                            frac = max(0.0, min(1.0, tval / total))
-                            on_progress(frac)
-                            last_progress_time = time.time()
-                    elif key == "progress" and val == "end" and on_progress:
-                        on_progress(1.0)
+                    line_out = line_out.strip()
+                    if "=" in line_out:
+                        key, val = line_out.split("=", 1)
+                        if key in ("out_time_ms", "out_time_us", "out_time"):
+                            tval = _parse_progress_time(val)
+                            if tval is not None and total > 0 and on_progress:
+                                frac = max(0.0, min(1.0, tval / total))
+                                on_progress(frac)
+                                last_progress_time = time.time()
+                        elif key == "progress" and val == "end" and on_progress:
+                            on_progress(1.0)
             except Empty:
                 pass
 
@@ -369,6 +372,9 @@ def analyze_levels(input_path: str, dur: float, on_progress=None):
         on_progress=on_progress,
         on_rms=_on_rms
     )
+
+    print("--- FFMPEG STDERR FOR ANALYSIS ---\n" + _stderr + "\n------------------------------------")
+
 
     if CANCEL.is_set():
         raise RuntimeError("CANCELLED")

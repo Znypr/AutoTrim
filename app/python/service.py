@@ -56,7 +56,6 @@ def _gpu_decode_args():
         pass
     return []
 
-
 def _new_job_id():
     return uuid.uuid4().hex[:8]
 
@@ -124,7 +123,6 @@ def cmd_analyze(payload):
     t.start()
     send("job", id=job_id, status="started", kind="analyze")
     return {"ok": True, "job": job_id}
-
 
 def cmd_trim(payload):
     """
@@ -221,7 +219,7 @@ def cmd_trim(payload):
 
             detect_cmd = [
                 "ffmpeg","-hide_banner","-loglevel","info","-progress","pipe:1","-nostdin","-y",
-                *hwaccel_args, "-i", path,
+                *hwaccel_args, "-threads","0", "-i", path,
                 "-af", f"silencedetect=noise={trim._noise_for_ffmpeg(f'{noise}dB')}:d={silence}",
                 "-f","null","-"
             ]
@@ -260,15 +258,17 @@ def cmd_trim(payload):
                 render_len = max(0.001, et - st)
                 base = [
                     "ffmpeg","-hide_banner","-loglevel","verbose","-progress","pipe:1","-nostdin","-y",
-                    *hwaccel_args,
+                    *hwaccel_args, "-threads","0",
                     "-ss", f"{st:.6f}", "-i", path,
                     "-t", f"{render_len:.6f}",
                 ]
+
                 maps = ["-map","0:v:0"]
                 if has_audio: maps += ["-map","0:a:0"]
                 else: maps += ["-an"]
 
-                cmd = base + maps + vcodec_args + (acodec_args if has_audio else []) + ["-movflags","+faststart", tmp_out]
+                cmd = base + ["-threads","0"] + maps + vcodec_args + (acodec_args if has_audio else []) + ["-movflags","+faststart", tmp_out]
+
                 rc, stderr_txt = trim.run_ffmpeg_progress(cmd, total=render_len, desc="render", on_progress=on_render)
 
                 if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
@@ -322,7 +322,7 @@ def cmd_trim(payload):
                 cmd = [
                     "ffmpeg", "-hide_banner", "-loglevel", "verbose",
                     "-progress", "pipe:1", "-nostdin", "-y",
-                    # IMPORTANT: no hwaccel with filter_complex
+                    "-threads","0",
                     "-i", path,
                     "-filter_complex", ";".join(fc_parts),
                     *maps,
@@ -331,6 +331,7 @@ def cmd_trim(payload):
                     "-movflags", "+faststart",
                     tmp_out
                 ]
+
 
                 rc, stderr_txt = trim.run_ffmpeg_progress(
                     cmd, total=render_len, desc="render", on_progress=on_render
@@ -397,24 +398,10 @@ def cmd_cancel(payload):
         send("job", id=job_id, status="error", error=str(e), kind="cancel")
         return {"ok": False, "error": str(e)}
 
-
 def cleanup_and_exit(signum, frame):
     """Signal handler to kill all ffmpeg processes before exiting."""
     trim.kill_all_active_processes()
     sys.exit(0)
-
-def cmd_cancel(payload):
-    job_id = payload.get("job")
-    j = JOBS.get(job_id)
-    if not j:
-        send("job", id=job_id, status="cancelled", kind="unknown")
-        return {"ok": True}
-    try:
-        j["cancel"].set()
-        return {"ok": True}
-    except Exception as e:
-        send("job", id=job_id, status="error", error=str(e), kind="cancel")
-        return {"ok": False, "error": str(e)}
 
 def cmd_get_params_config(_payload=None):
     return {"ok": True, "config": PARAM_CONFIG}
@@ -430,8 +417,6 @@ def cmd_probe(payload):
         return {"ok": True, "duration": float(dur), "size_mb": size_mb}
     except Exception as e:
         return {"ok": False, "error": f"ffprobe failed: {e}"}
-
-
 
 def main():
     # Run cleanup once at startup
