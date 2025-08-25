@@ -24,6 +24,9 @@ Thumbs.db
 ffmpeg/
 *.exe
 
+# Electron-Builder output
+release/
+
 # Media outputs
 *.mp4
 *.mov
