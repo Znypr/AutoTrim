@@ -30,13 +30,19 @@
         <span class="meta-title" title="No file selected.">No file selected.</span>
         <span class="meta-stats"></span>
       </div>
-      <button id="pickBtn" class="btn primary wide">Select video…</button>
-      <input id="fileInput" type="file" accept="video/*" style="display:none" />
+      <button id="pickBtn" class="btn primary wide">Select video(s)…</button>
+      <input id="fileInput" type="file" accept="video/*" style="display:none" multiple />
+
+      <div id="batchNav" style="display: none; justify-content: space-between; align-items: center;">
+        <button id="prevBtn" class="btn secondary">◀ Prev</button>
+        <span id="navStatus" class="file-meta"></span>
+        <button id="nextBtn" class="btn secondary">Next ▶</button>
+      </div>
 
       <div id="postActions">
-        <button id="showBtn" class="btn" disabled>Show in Folder</button>
-        <button id="playBtn" class="btn" disabled>Play File</button>
-        <button id="toggleViewBtn" class="icon-btn" disabled title="Switch between raw and trimmed video">⇆</button>
+        <button id="showBtn" class="btn secondary" disabled>Show File</button>
+        <button id="playBtn" class="btn secondary" disabled>Play File</button>
+        <button id="toggleViewBtn" class="icon-btn" title="Switch between Raw and Trimmed" style="display: none;" disabled>⇆</button>
       </div>
     </aside>
 
@@ -121,6 +127,7 @@
         </div>
       </li>
     </template>
+  </div>
 
   <div class="statusbar">
     <div class="status-left">
@@ -158,8 +165,6 @@
 
   <script src="../node_modules/chart.js/dist/chart.umd.js"></script>
   <script src="ui.js"></script>
-</body>
-
 </body>
 
 </html>

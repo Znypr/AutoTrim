@@ -54,6 +54,38 @@ function startPython() {
   }
 }
 
+function shutdownPython() {
+  return new Promise(resolve => {
+    if (!py || py.killed) {
+      console.log("Python process already gone.");
+      return resolve();
+    }
+    
+    py.on('exit', () => {
+      console.log("Python process exited.");
+      if (!py.killed) py.killed = true;
+      resolve();
+    });
+
+    console.log("Sending shutdown command to Python...");
+    try {
+      py.stdin.write(JSON.stringify({ cmd: "shutdown" }) + '\n');
+      py.stdin.end();
+    } catch (e) {
+      console.error("Failed to send shutdown command, killing process.", e);
+      py.kill(); // Fallback if stdin is already closed
+    }
+
+    setTimeout(() => {
+      if (!py.killed) {
+        console.warn("Python did not exit gracefully, forcing kill.");
+        py.kill();
+      }
+      resolve();
+    }, 2000); // 2-second timeout
+  });
+}
+
 function handlePythonLine(line) {
   if (!line.trim()) return;
   let msg;
@@ -169,9 +201,9 @@ ipcMain.handle('sys:chooseOpen', async (_evt, opts = {}) => {
     const baseDir = typeof opts.defaultPath === 'string' && opts.defaultPath ? opts.defaultPath
       : (typeof st.defaultInputDir === 'string' && st.defaultInputDir ? st.defaultInputDir : app.getPath('downloads'));
     const res = await dialog.showOpenDialog({
-      title: 'Select video',
+      title: 'Select video(s)',
       defaultPath: baseDir,
-      properties: ['openFile'],
+      properties: ['openFile', 'multiSelections'],
       filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm'] }, { name: 'All Files', extensions: ['*'] }]
     });
     if (res.canceled) return { ok: false, cancelled: true };
@@ -235,6 +267,19 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
-app.on('will-quit', () => { if (!app.isPackaged) globalShortcut.unregisterAll(); });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('will-quit', async (e) => {
+  console.log("App is quitting...");
+  if (!app.isPackaged) globalShortcut.unregisterAll();
+  
+  e.preventDefault();
+  
+  await shutdownPython();
+  
+  process.exit();
+});
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
 app.on('quit', () => { try { if (py && !py.killed) py.kill(); } catch { } });

@@ -1,31 +1,28 @@
-// ui.js
 "use strict";
 
-// ----------------------- Helpers & State -----------------------
 const $ = (s) => document.querySelector(s);
 
 const state = {
-  filePath: null,
-  outputPath: null,
-  suggestedName: null,
-  jobId: null,
+  files: [], 
+  currentIndex: -1,
+  batchJobId: null,
+  totalBatchDuration: 0,
   cancelling: false,
   chart: null,
-  lastXs: [],
-  lastYs: [],
   defaultInputDir: null,
   defaultOutputDir: null,
+  currentPreview: 'raw',
   presets: [],
-  currentView: "raw",
 };
 
 const DOM = {
   startTrimBtn: $("#startTrimBtn"),
   pickBtn: $("#pickBtn"),
-  outBtn: $("#outBtn"),
   showBtn: $("#showBtn"),
   playBtn: $("#playBtn"),
-  toggleViewBtn: $("#toggleViewBtn"),
+  toggleViewBtn: $("#toggleViewBtn"), 
+  postActions: $("#postActions"),
+  postActionSep: $("#postActionSep"),
   inputDirBtn: $("#inputDirBtn"),
   outputDirBtn: $("#outputDirBtn"),
   addPresetBtn: $("#addPresetBtn"),
@@ -41,7 +38,6 @@ const DOM = {
   progress: $("#progress"),
   thumb: $("#thumb"),
   meta: $("#meta"),
-  outMeta: $("#outMeta"),
   ioSummary: $("#ioSummary"),
   paramCard: $("#paramCard"),
   paramCardTitle: $("#paramCardTitle"),
@@ -50,6 +46,10 @@ const DOM = {
   histChartCanvas: $("#histChart"),
   rangeWrap: $(".range-wrap"),
   rangeFill: $("#rangeFill"),
+  batchNav: $("#batchNav"),
+  prevBtn: $("#prevBtn"),
+  nextBtn: $("#nextBtn"),
+  navStatus: $("#navStatus"),
   customPrompt: $("#customPrompt"),
   promptTitle: $("#promptTitle"),
   promptInput: $("#promptInput"),
@@ -69,195 +69,249 @@ const paramMap = {
   keep: { slider: "#keepS" },
 };
 
-window.__job = { id: null, t0: 0 };
-
-
-// ----------------------- Backend Events -----------------------
 function initializeBackendEventHandler() {
   window.py.onEvent((msg) => {
     if (msg.event === "progress") handleProgressUpdate(msg);
     else if (msg.event === "job") handleJobStatusUpdate(msg);
-    else if (msg.event === "analysis_result" && msg.job_id === state.jobId) handleAnalysisResult(msg);
+    else if (msg.event === "analysis_result") handleAnalysisResult(msg);
   });
+}
+
+function updateCollectiveProgress() {
+    if (!state.batchJobId || state.totalBatchDuration === 0) return;
+
+    let totalProgressSeconds = 0;
+    for (const file of state.files) {
+        if (file.status === 'finished') {
+            totalProgressSeconds += file.duration;
+        } else {
+            totalProgressSeconds += (file.duration || 0) * (file.progress || 0);
+        }
+    }
+
+    const collectiveFraction = totalProgressSeconds / state.totalBatchDuration;
+    setProgress(collectiveFraction);
+
+    const activeFiles = state.files.filter(f => f.status === 'started' && f.stage);
+    const activeStages = [...new Set(activeFiles.map(f => f.stage))];
+
+    let stageText = '';
+    if (activeStages.length > 0) {
+        const formattedStages = activeStages.map(s => s.charAt(0).toUpperCase() + s.slice(1));
+        stageText = ` [${formattedStages.join(', ')}]`;
+    }
+
+    setStatus(`Processing (${(collectiveFraction * 100).toFixed(0)}%)...${stageText}`);
 }
 
 function handleProgressUpdate(msg) {
-  if (!state.jobId) return;
-
-  const p = Math.max(0, Math.min(1, Number(msg.value) || 0));
-  const stage = msg.stage || "working";
-  const label = stage === "analyze" ? "Analyzing"
-              : stage === "detect"  ? "Detecting silences"
-              : stage === "render"  ? "Rendering"
-              : "Working";
-
-  let etaTxt = "";
-  if (p > 0 && window.__job.t0) {
-    const elapsed = (performance.now() - window.__job.t0) / 1000; // sec
-    const remaining = elapsed * (1 - p) / p;
-    const rem = Math.max(0, isFinite(remaining) ? remaining : 0);
-    const m = Math.floor(rem / 60);
-    const s = Math.round(rem % 60);
-    etaTxt = ` • ETA ${m}:${String(s).padStart(2, '0')}`;
+  if (msg.stage === 'analyze') {
+      const p = Math.max(0, Math.min(1, Number(msg.value) || 0));
+      setProgress(p);
+      setStatus(`Analyzing... (${(p * 100).toFixed(0)}%)`);
+      return;
   }
 
-  setProgress(p);
-  setStatus(`${label} ${(p * 100) | 0}%${etaTxt}`);
+  if (state.batchJobId) {
+    const file = state.files.find(f => f.jobId === msg.job_id);
+    if (file) {
+      file.progress = Math.max(0, Math.min(1, Number(msg.value) || 0));
+      file.stage = msg.stage || 'working';
+      updateCollectiveProgress();
+    }
+  }
 }
 
 function handleJobStatusUpdate(msg) {
-  if (state.jobId && msg.id !== state.jobId) return;
+  const analysisFile = state.files.find(f => f.jobId === msg.id);
+  if (msg.kind === 'analyze' && analysisFile) {
+    if (['finished', 'cancelled', 'error'].includes(msg.status)) {
+      analysisFile.jobId = null;
+    }
+    if (state.files[state.currentIndex] === analysisFile && msg.status === "error") {
+      setStatus(`Analysis Failed.`);
+    }
+    return;
+  }
 
-  switch (msg.status) {
-    case "started":
-      state.jobId = msg.id;
-      window.__job.id = msg.id;
-      window.__job.t0 = performance.now();
-      setStartBtnActive();
-      setStatus(msg.kind === "trim" ? "Detecting silences…" : "Analyzing histogram…");
-      setProgress(0.01);
-      return;
+  if (msg.kind === 'trim' && state.batchJobId) {
+    const trimFile = state.files.find(f => f.path === msg.source_path);
 
-    case "finished":
-    case "cancelled":
-    case "error":
-      if (msg.status === "finished" && msg.kind === "trim" && msg.ok) {
-        setStatus("Done.");
-        showPostRenderActions(msg.output);
-      } else {
-        resetPostRenderActions();
-        if (msg.status === "cancelled") setStatus("Cancelled.");
-        else if (msg.status === "error") { setStatus("Error."); console.error(`${msg.kind || "Job"} error:`, msg.error); }
+    if (trimFile) {
+      trimFile.status = msg.status;
+      if (msg.status === 'finished') {
+        trimFile.outPath = msg.output;
+        trimFile.progress = 1.0;
+        updateCollectiveProgress();
       }
-      state.jobId = null;
-      state.cancelling = false;
-      window.__job.id = null;
-      window.__job.t0 = 0;
+    }
+
+    const doneCount = state.files.filter(f => ['finished', 'error', 'cancelled'].includes(f.status)).length;
+
+    if (doneCount === state.files.length) {
+      const successCount = state.files.filter(f => f.status === 'finished').length;
+      setStatus(`Done. ${successCount}/${state.files.length}`);
+      setProgress(1.0);
+      state.batchJobId = null;
       setStartBtnIdle();
-      setProgress(0);
-      return;
+      displayVideo(state.currentIndex);
+    }
   }
 }
 
-function showConfirm({ title, message }) {
-  return new Promise((resolve) => {
-    DOM.confirmTitle.textContent = title;
-    DOM.confirmMessage.textContent = message;
-    DOM.customConfirm.classList.add("visible");
-    DOM.confirmOkBtn.focus(); // Focus the confirmation button
+function handleAnalysisResult(msg) {
+    const file = state.files.find(f => f.jobId === msg.job_id);
+    if (!file) return;
 
-    const cleanup = (value) => {
-      DOM.customConfirm.classList.remove("visible");
-      DOM.confirmOkBtn.onclick = null;
-      DOM.confirmCancelBtn.onclick = null;
-      document.removeEventListener('keydown', handleKey);
-      resolve(value);
-    };
+    file.analysis = { xs: msg.x, ys: msg.y };
 
-    const handleKey = (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        cleanup(true); // 'Enter' confirms
-      } else if (e.key === 'Escape') {
-        cleanup(false); // 'Escape' cancels
-      }
-    };
+    if (state.files[state.currentIndex] === file) {
+        const xs = msg.x, ys = msg.y;
 
-    DOM.confirmOkBtn.onclick = () => cleanup(true);
-    DOM.confirmCancelBtn.onclick = () => cleanup(false);
-    document.addEventListener('keydown', handleKey);
-  });
+        const nz = xs.filter((x, i) => isFinite(ys[i]) && ys[i] > 0.01);
+        const dataMin = nz.length ? Math.min(...nz) : -60;
+        const dataMax = nz.length ? Math.max(...nz) : 0;
+        
+        const pad = 2;
+        const newMin = Math.floor(dataMin) - pad;
+        const newMax = Math.ceil(dataMax) + pad;
+
+        [DOM.minDbRange, DOM.maxDbRange, DOM.noiseDbSlider].forEach(slider => {
+            if (slider) {
+                slider.min = String(newMin);
+                slider.max = String(newMax);
+            }
+        });
+
+        DOM.minDbRange.value = String(Math.max(newMin, Math.round(dataMin)));
+        DOM.maxDbRange.value = String(Math.min(newMax, Math.round(dataMax)));
+        
+        renderHist(xs, ys, Number(DOM.minDbRange.value), Number(DOM.maxDbRange.value));
+        
+        updateRangeFill();
+        setStatus("Ready.");
+        setProgress(0);
+    }
 }
-
-function showPrompt({ title, defaultValue = '' }) {
-  return new Promise((resolve) => {
-    DOM.promptTitle.textContent = title;
-    DOM.promptInput.value = defaultValue;
-    DOM.customPrompt.classList.add("visible");
-    DOM.promptInput.focus();
-    DOM.promptInput.select();
-
-    const cleanup = (value) => {
-      DOM.customPrompt.classList.remove("visible");
-      // Detach event handlers to prevent memory leaks
-      DOM.promptSaveBtn.onclick = null;
-      DOM.promptCancelBtn.onclick = null;
-      document.removeEventListener('keydown', handleKey);
-      resolve(value);
-    };
-    
-    const handleKey = (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault(); // Prevents form submission
-            cleanup(DOM.promptInput.value);
-        } else if (e.key === 'Escape') {
-            cleanup(null); // Treat Escape as a cancellation
+async function startAnalysisForIndex(index) {
+    const file = state.files[index];
+    if (!file || file.jobId || file.analysis) return;
+    setStatus(`Analyzing...`);
+    renderHist([], [], -60, 0);
+    try {
+        const res = await window.py.send("analyze", { path: file.path, min_db: -80, max_db: 0, bins: 0.1 });
+        if (res?.ok && res.job) {
+            file.jobId = res.job;
+        } else {
+            throw new Error(res?.error || "Failed to start analysis.");
         }
-    };
-
-    DOM.promptSaveBtn.onclick = () => cleanup(DOM.promptInput.value);
-    DOM.promptCancelBtn.onclick = () => cleanup(null);
-    document.addEventListener('keydown', handleKey, { once: false });
-  });
+    } catch (e) {
+        setStatus("Analysis Error.");
+        console.error(e);
+    }
 }
 
-async function startAnalysisJob(path) {
-  if (state.jobId) { setStatus("A job is already running."); return; }
-  try {
-    const res = await window.py.send("analyze", { path, min_db: -80, max_db: 0, bins: 0.1 });
-    if (!res?.ok || !res.job) throw new Error(res?.error || "Failed to start analysis job.");
-  } catch {
-    setStatus("Error."); setStartBtnIdle(); setProgress(0);
-  }
-}
-
-// ----------------------- UI State -----------------------
-function setStatus(t) { if (DOM.status) DOM.status.textContent = t; }
-function setProgress(v) { if (DOM.progress) DOM.progress.value = Math.max(0, Math.min(1, v)); }
+function setStatus(t) { DOM.status.textContent = t; }
+function setProgress(v) { DOM.progress.value = Math.max(0, Math.min(1, v)); }
 
 function setStartBtnIdle() {
-  const b = DOM.startTrimBtn; b.classList.remove("danger"); b.textContent = "Start"; b.disabled = false;
+  const b = DOM.startTrimBtn; b.classList.remove("danger");
+  b.textContent = state.files.length > 1 ? `Start Batch Trim (${state.files.length})` : "Start";
+  b.disabled = false;
 }
+
 function setStartBtnActive() {
-  const b = DOM.startTrimBtn; b.classList.add("danger"); b.textContent = "Cancel"; b.disabled = false;
+  const b = DOM.startTrimBtn; b.classList.add("danger"); b.textContent = "Cancel Batch"; b.disabled = false;
 }
+
 function setStartBtnCancelling() {
   const b = DOM.startTrimBtn; b.classList.add("danger"); b.textContent = "Cancelling…"; b.disabled = true;
 }
 
-function showPostRenderActions(path) {
-  state.outputPath = path;
-  const t = DOM.toggleViewBtn; if (!t) return;
-  t.disabled = false;
-  state.currentView = "cut";
-  t.classList.add("active");
-  t.title = "Switch to Raw video";
-  displayFileInformation(state.outputPath);
+async function displayVideo(index) {
+    // If no valid file is selected, disable action buttons
+    if (index < 0 || index >= state.files.length) {
+        DOM.showBtn.disabled = true;
+        DOM.playBtn.disabled = true;
+        DOM.toggleViewBtn.style.display = 'none';
+        DOM.toggleViewBtn.disabled = true;
+        DOM.showBtn.onclick = null;
+        DOM.playBtn.onclick = null;
+        return;
+    }
+    
+    state.currentIndex = index;
+    const file = state.files[index];
+
+    // Enable the main action buttons and point them to the source file
+    DOM.showBtn.disabled = false;
+    DOM.playBtn.disabled = false;
+    DOM.showBtn.onclick = () => window.sys.showInFolder(file.path);
+    DOM.playBtn.onclick = () => window.sys.openFile(file.path);
+
+    // Show/hide the toggle button based on whether the file is trimmed
+    if (file.outPath && file.status === 'finished') {
+        DOM.toggleViewBtn.style.display = 'inline-block';
+        DOM.toggleViewBtn.disabled = false;
+    } else {
+        DOM.toggleViewBtn.style.display = 'none';
+        DOM.toggleViewBtn.disabled = true;
+    }
+
+    // Always reset to the raw preview when switching files
+    state.currentPreview = 'raw';
+    DOM.toggleViewBtn.classList.remove('active');
+    DOM.toggleViewBtn.title = "Switch to Trimmed";
+
+    // Update Nav
+    DOM.navStatus.textContent = `${index + 1} of ${state.files.length}`;
+    DOM.prevBtn.disabled = index === 0;
+    DOM.nextBtn.disabled = index === state.files.length - 1;
+
+    // Update thumbnail and metadata to show the RAW file
+    await displayFileInformation(file.path);
+
+    // Handle histogram
+    if (file.analysis) {
+        renderHist(file.analysis.xs, file.analysis.ys);
+        setStatus("Ready.");
+    } else {
+        startAnalysisForIndex(index);
+    }
 }
 
-function resetPostRenderActions() {
-  const { showBtn, playBtn, toggleViewBtn } = DOM;
-  [showBtn, playBtn].forEach((b) => { if (b) { b.disabled = true; b.classList.remove("active"); b.onclick = null; } });
-  if (toggleViewBtn) { toggleViewBtn.disabled = true; toggleViewBtn.classList.remove("active"); }
+async function loadFiles(paths) {
+    if (!paths || paths.length === 0) return;
+    setStatus("Probing files...");
+    setProgress(0);
+    const filePromises = paths.map(async (p) => {
+        const res = await window.py.send("probe", { path: p });
+        return {
+            path: p,
+            duration: res.ok ? res.duration : 0,
+            progress: 0,
+            stage: null,
+            thumb: null,
+            analysis: null,
+            jobId: null,
+            outPath: null,
+            status: null
+        };
+    });
+    state.files = await Promise.all(filePromises);
+    state.totalBatchDuration = state.files.reduce((sum, f) => sum + f.duration, 0);
+    if (state.files.length > 1) {
+        DOM.batchNav.style.display = 'flex';
+        DOM.startTrimBtn.textContent = `Start Batch Trim (${state.files.length})`;
+    } else {
+        DOM.batchNav.style.display = 'none';
+        DOM.startTrimBtn.textContent = "Start";
+    }
+    displayVideo(0);
 }
 
-function updateIoSummary() {
-  const inDir = state.defaultInputDir || "Default (Downloads)";
-  const outDir = state.defaultOutputDir || "Default (Downloads)";
-  if (DOM.ioSummary) DOM.ioSummary.innerHTML = `<span class="io-label">Input:</span> ${inDir}  <span class="sep">|</span>  <span class="io-label">Output:</span> ${outDir}`;
-}
-
-function showParamView(view) {
-  const c = DOM.paramCard, t = DOM.paramCardTitle;
-  c.classList.remove("show-info", "show-presets");
-  if (view === "info") { c.classList.add("show-info"); t.textContent = "Parameter Info"; }
-  else if (view === "presets") { c.classList.add("show-presets"); t.textContent = "Presets"; }
-  else t.textContent = "Trimming Parameters";
-}
-
-// ----------------------- File Handling -----------------------
 async function displayFileInformation(filePath) {
-  const { thumb, meta, showBtn, playBtn } = DOM;
+  const { thumb, meta } = DOM;
   const metaTitle = meta.querySelector(".meta-title");
   const metaStats = meta.querySelector(".meta-stats");
 
@@ -268,16 +322,19 @@ async function displayFileInformation(filePath) {
 
   const base = filePath.split(/[/\\]/).pop() || "video.mp4";
   let durText = "—:—", sizeText = "— MB";
-
-  try {
-    const pr = await window.py.send("probe", { path: filePath });
-    if (pr?.ok && Number.isFinite(pr.duration)) durText = formatDuration(pr.duration);
-  } catch { }
+  const fileData = state.files.find(f => f.path === filePath);
+  if (fileData && fileData.duration > 0) {
+      durText = formatDuration(fileData.duration);
+  } else {
+    try {
+        const pr = await window.py.send("probe", { path: filePath });
+        if (pr?.ok && Number.isFinite(pr.duration)) durText = formatDuration(pr.duration);
+    } catch { }
+  }
   try {
     const st = await window.sys?.fsStat?.(filePath);
     if (st?.ok && typeof st.size === "number") sizeText = formatSize(st.size);
   } catch { }
-
   if (metaTitle && metaStats) {
     const MAX = 26, i = base.lastIndexOf("."), hasExt = i > 0 && base.length - i <= 5;
     let name = hasExt ? base.slice(0, i) : base; const ext = hasExt ? base.slice(i) : "";
@@ -285,13 +342,6 @@ async function displayFileInformation(filePath) {
     metaTitle.textContent = name + ext;
     metaTitle.title = base;
     metaStats.innerHTML = `${durText} <span class="stats-sep">|</span> ${sizeText}`;
-  }
-
-  if (showBtn && playBtn) {
-    showBtn.disabled = false; playBtn.disabled = false;
-    showBtn.classList.add("active"); playBtn.classList.add("active");
-    showBtn.onclick = async () => { const r = await window.sys.showInFolder(filePath); if (!r?.ok) console.error("showInFolder failed:", r?.error); };
-    playBtn.onclick = async () => { const r = await window.sys.openFile(filePath); if (!r?.ok) console.error("openFile failed:", r?.error); };
   }
 
   try {
@@ -309,22 +359,6 @@ async function displayFileInformation(filePath) {
   } catch { }
 }
 
-async function handleFileSelection(backendPath) {
-  resetPostRenderActions();
-  state.filePath = backendPath;
-  state.outputPath = null;
-  state.currentView = "raw";
-  updateSuggestedName();
-  await displayFileInformation(state.filePath);
-  startAnalysisJob(state.filePath);
-}
-
-function updateSliderFill(slider) {
-  const p = ((slider.value - slider.min) / (slider.max - slider.min)) * 100;
-  slider.style.setProperty("--p", `${p}%`);
-}
-
-// ----------------------- Suggested Name -----------------------
 function getCurrentSliderValues() {
   const vals = {};
   for (const k in paramMap) {
@@ -334,15 +368,6 @@ function getCurrentSliderValues() {
   return vals;
 }
 
-function updateSuggestedName() {
-  if (!state.filePath) return;
-  const fileName = state.filePath.split(/[/\\]/).pop(); if (!fileName) return;
-  let base = fileName.replace(/\.[^.]+$/, "");
-  base = base.slice(0, 25);
-  state.suggestedName = `${base}-trim.mp4`;
-}
-
-// ----------------------- Settings & Presets -----------------------
 async function loadSettings() {
   try {
     const res = await window.sys?.getSettings?.();
@@ -352,7 +377,7 @@ async function loadSettings() {
     state.presets = Array.isArray(st.presets) ? st.presets : [];
     renderPresets();
     updateIoSummary();
-  } catch { }
+  } catch {}
 }
 async function savePresets() { await window.sys.setSettings({ presets: state.presets }); }
 
@@ -382,26 +407,23 @@ function applyPreset(id) {
 
 async function editPreset(id) {
   const p = state.presets.find((x) => x.id === id); if (!p) return;
-  
   const newTitle = await showPrompt({
     title: "Enter a new preset name",
     defaultValue: p.title
   });
-
   if (newTitle !== null && newTitle.trim()) {
     p.title = newTitle.trim();
     savePresets();
     renderPresets();
   }
 }
+
 async function deletePreset(id) {
   const p = state.presets.find((x) => x.id === id); if (!p) return;
-
   const confirmed = await showConfirm({
     title: "Confirm Deletion",
     message: `Are you sure you want to delete the preset "${p.title}"? This action cannot be undone.`
   });
-
   if (confirmed) {
     state.presets = state.presets.filter((x) => x.id !== id);
     savePresets();
@@ -409,7 +431,6 @@ async function deletePreset(id) {
   }
 }
 
-// ----------------------- Chart & Ranges -----------------------
 function ensureChart() {
   if (state.chart) return state.chart;
   const ctx = DOM.histChartCanvas.getContext("2d");
@@ -428,45 +449,21 @@ function ensureChart() {
   return state.chart;
 }
 
-function renderHist(xs, ys, lo, hi) {
-  if (!xs.length) return;
-  const a = Math.min(lo, hi), b = Math.max(lo, hi);
-  const sel = xs
-    .map((x, i) => ({ x, y: ys[i] }))
-    .filter((p) => p.x >= a && p.x <= b && Number.isFinite(p.y));
-  if (!sel.length) return;
+function renderHist(xs, ys, lo = null, hi = null) {
   const ch = ensureChart();
+  if (!xs || xs.length === 0) {
+    ch.data.datasets[0].data = [];
+    ch.update();
+    return;
+  }
+  if (lo === null) lo = Number(DOM.minDbRange.value);
+  if (hi === null) hi = Number(DOM.maxDbRange.value);
+  const a = Math.min(lo, hi), b = Math.max(lo, hi);
+  const sel = xs.map((x, i) => ({ x, y: ys[i] })).filter((p) => p.x >= a && p.x <= b && Number.isFinite(p.y));
   ch.options.scales.x.min = a;
   ch.options.scales.x.max = b;
   ch.data.datasets[0].data = sel;
   ch.update();
-}
-
-function handleAnalysisResult(data) {
-  if (!data.ok || !Array.isArray(data.x)) { setStatus("Error during analysis."); setStartBtnIdle(); return; }
-  const xs = data.x, ys = data.y;
-  state.lastXs = xs; state.lastYs = ys;
-
-  const nz = xs.filter((x, i) => isFinite(ys[i]) && ys[i] > 0);
-  const min = nz.length ? Math.min(...nz) : Math.min(...xs);
-  const max = nz.length ? Math.max(...nz) : Math.max(...xs);
-  const pad = 1, lo = Math.floor(min) - pad, hi = Math.ceil(max) + pad;
-
-  [DOM.minDbRange, DOM.maxDbRange].forEach((r) => { r.step = "0.1"; r.min = String(lo); r.max = String(hi); });
-  DOM.noiseDbSlider.min = String(lo);
-  DOM.noiseDbSlider.max = String(hi);
-
-  //DOM.noiseDbSlider.value = String(Math.round((lo + hi) / 2));
-  DOM.noiseDbSlider.dispatchEvent(new Event("input"));
-
-  DOM.minDbRange.value = String(Math.max(lo, Math.round(min)));
-  DOM.maxDbRange.value = String(Math.min(hi, Math.round(max)));
-  DOM.minDbRange.dispatchEvent(new Event("input"));
-
-  setStatus("Histogram ready.");
-  setProgress(0);
-  state.jobId = null;
-  setStartBtnIdle();
 }
 
 function updateRangeFill() {
@@ -484,7 +481,6 @@ function updateRangeFill() {
   rangeFill.style.width = `${Math.max(0, right - left)}px`;
 }
 
-// ----------------------- Params -----------------------
 async function loadAndApplyParams() {
   try {
     const res = await window.py.send("get_params_config");
@@ -503,25 +499,20 @@ async function loadAndApplyParams() {
   } catch { }
 }
 
-function bindVal(id, fmt) {
-  const i = $(id), v = $(id + "Val");
-  const up = () => { if (v) v.textContent = fmt(i.value); };
-  i.addEventListener("input", up); up();
+function updateIoSummary() {
+  const inDir = state.defaultInputDir || "Default (Downloads)";
+  const outDir = state.defaultOutputDir || "Default (Downloads)";
+  if (DOM.ioSummary) DOM.ioSummary.innerHTML = `<span class="io-label">Input:</span> ${inDir}  <span class="sep">|</span>  <span class="io-label">Output:</span> ${outDir}`;
 }
 
-function makeSliderValueEditable(valueId, inputSelector, parse) {
-  const valEl = $(valueId), input = $(inputSelector);
-  if (!valEl || !input) return;
-  valEl.contentEditable = "true";
-  valEl.setAttribute("role", "spinbutton");
-  valEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); valEl.blur(); } });
-  valEl.addEventListener("blur", () => {
-    const n = parse(valEl.textContent);
-    if (Number.isFinite(n)) { input.value = String(n); input.dispatchEvent(new Event("input", { bubbles: true })); }
-  });
+function showParamView(view) {
+  const c = DOM.paramCard, t = DOM.paramCardTitle;
+  c.classList.remove("show-info", "show-presets");
+  if (view === "info") { c.classList.add("show-info"); t.textContent = "Parameter Info"; }
+  else if (view === "presets") { c.classList.add("show-presets"); t.textContent = "Presets"; }
+  else t.textContent = "Trimming Parameters";
 }
 
-// ----------------------- Utils -----------------------
 function formatSize(bytes) {
   if (!bytes || bytes < 0) return "0 MB";
   const mb = bytes / 1024 / 1024;
@@ -538,64 +529,73 @@ function formatDuration(totalSeconds) {
   return h > 0 ? `${h}h${two(m)}m${two(sec)}s` : `${m}m${two(sec)}s`;
 }
 
-// ----------------------- Event Handlers -----------------------
 async function handleStartTrimClick() {
-  if (state.jobId && !state.cancelling) {
+  if (state.batchJobId && !state.cancelling) {
     state.cancelling = true; setStartBtnCancelling();
-    try { await window.py.send("cancel", { job: state.jobId }); }
-    catch (e) { console.error(e); state.cancelling = false; setStartBtnActive(); }
+    for (const file of state.files) {
+        if(file.jobId) await window.py.send("cancel", { job: file.jobId });
+    }
+    state.batchJobId = null;
+    state.cancelling = false;
+    setStartBtnIdle();
     return;
   }
-  if (!state.filePath || state.jobId) { setStatus("Please select a file first."); return; }
+  if (state.files.length === 0) { setStatus("Select File(s)."); return; }
+  
+  setStartBtnActive();
+  setProgress(0);
+  setStatus("Starting...");
+  state.batchJobId = crypto.randomUUID();
 
-  DOM.startTrimBtn.disabled = true;
-  try {
-    const res = await window.sys.getDefaultSavePath({ suggestedName: state.suggestedName || "trimmed.mp4" });
-    if (!res.ok || !res.path) {
-      setStatus("Error: Could not determine output path.");
-      setStartBtnIdle();
-      return;
+  state.files.forEach(f => {
+      f.progress = 0;
+      f.status = null;
+      f.jobId = null;
+      f.stage = null;
+  });
+
+  for (const file of state.files) {
+    const suggestedName = (file.path.split(/[/\\]/).pop().replace(/\.[^.]+$/, "") || "video") + "-trim.mp4";
+    const outRes = await window.sys.getDefaultSavePath({ suggestedName });
+    
+    if (outRes.ok) {
+        const payload = { ...getCurrentSliderValues(), path: file.path, out: outRes.path };
+        try {
+            const trimRes = await window.py.send("trim", payload);
+            if (trimRes?.ok && trimRes.job) {
+                file.jobId = trimRes.job;
+            } else {
+                file.status = 'error';
+            }
+        } catch {
+            file.status = 'error';
+        }
+    } else {
+        file.status = 'error';
     }
-
-    const payload = { ...getCurrentSliderValues(), path: state.filePath, out: res.path };
-    const trimRes = await window.py.send("trim", payload);
-    if (!trimRes?.ok) throw new Error(trimRes?.error || "Trim failed to start.");
-  } catch (e) {
-    console.error(e); setStatus("Error."); setProgress(0); setStartBtnIdle();
   }
 }
 
 async function handlePickFileClick() {
-  if (state.jobId) return;
-  resetPostRenderActions();
   try {
     const res = await window.sys.chooseOpen({ defaultPath: state.defaultInputDir });
-    if (res?.ok && res.paths?.[0]) {
-      await handleFileSelection(res.paths[0]);
+    if (res?.ok && res.paths?.length) {
+      await loadFiles(res.paths);
     }
-  } catch {
+  } catch (e) {
     DOM.fileInput.click();
   }
 }
 
 async function handleFileInputChange(e) {
-  if (state.jobId) return;
-  resetPostRenderActions();
-  const file = e.target.files?.[0]; if (!file) return;
-
-  // The 'file.path' property is only available in Electron environments.
-  let backendPath = file.path;
-  if (!backendPath) {
-    const ab = await file.arrayBuffer();
-    const ext = file.name.split(".").pop() || "mp4";
-    backendPath = await window.py.saveTemp(ab, ext);
+  const files = e.target.files;
+  if (!files || files.length === 0) return;
+  const paths = Array.from(files).map(f => f.path).filter(Boolean);
+  if (paths.length > 0) {
+    await loadFiles(paths);
+  } else {
+    setStatus("File Path Error.");
   }
-  await handleFileSelection(backendPath);
-}
-
-function toggleParamView(viewName) {
-  const currentView = DOM.paramCard.classList.contains(`show-${viewName}`) ? "front" : viewName;
-  showParamView(currentView);
 }
 
 function handleAddPreset() {
@@ -606,152 +606,149 @@ function handleAddPreset() {
   showParamView("presets");
 }
 
-// ----------------------- Chart UX -----------------------
-function wireRangeEditors() {
-  const { minDbRange, maxDbRange } = DOM;
-  const makeEditable = (id, onCommit) => {
-    const span = $(`#${id}`); if (!span) return;
-    span.contentEditable = "true";
-    span.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); span.blur(); } });
-    span.addEventListener("blur", () => {
-      const val = Number(span.textContent);
-      if (Number.isFinite(val)) onCommit(val);
-      updateRangeFill();
-    });
-  };
-}
-
-function wireChartContextMenu() {
-  const canvas = DOM.histChartCanvas; if (!canvas) return;
-  const setRangeFromClick = (val) => {
-    const { minDbRange, maxDbRange } = DOM;
-    const curMin = Number(minDbRange.value), curMax = Number(maxDbRange.value);
-    const target = Math.abs(val - curMin) <= Math.abs(val - curMax) ? minDbRange : maxDbRange;
-    target.value = String(val);
-    target.dispatchEvent(new Event("input", { bubbles: true }));
-  };
-  const getClickValue = (e) => {
-    const { minDbRange, maxDbRange } = DOM;
-    const ch = ensureChart();
-    const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const xScale = ch.scales?.x;
-    const approx = xScale?.getValueForPixel(px) ?? 0;
-    return Math.min(Number(maxDbRange.max), Math.max(Number(minDbRange.min), Math.round(Number.isFinite(approx) ? approx : 0)));
-  };
-  canvas.addEventListener("click", (e) => { try { setRangeFromClick(getClickValue(e)); } catch { } });
-  canvas.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    try {
-      const seed = getClickValue(e);
-      const entered = window.prompt("Enter dB value (e.g., -47):", String(seed));
-      if (entered == null) return;
-      const num = Number(String(entered).replace(/[^-\d.]+/g, ""));
-      if (!Number.isFinite(num)) return;
-      setRangeFromClick(num);
-    } catch { }
+function showPrompt({ title, defaultValue = '' }) {
+  return new Promise((resolve) => {
+    DOM.promptTitle.textContent = title;
+    DOM.promptInput.value = defaultValue;
+    DOM.customPrompt.classList.add("visible");
+    DOM.promptInput.focus();
+    DOM.promptInput.select();
+    const cleanup = (value) => {
+      DOM.customPrompt.classList.remove("visible");
+      DOM.promptSaveBtn.onclick = null;
+      DOM.promptCancelBtn.onclick = null;
+      document.removeEventListener('keydown', handleKey);
+      resolve(value);
+    };
+    const handleKey = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); cleanup(DOM.promptInput.value); } 
+        else if (e.key === 'Escape') { cleanup(null); }
+    };
+    DOM.promptSaveBtn.onclick = () => cleanup(DOM.promptInput.value);
+    DOM.promptCancelBtn.onclick = () => cleanup(null);
+    document.addEventListener('keydown', handleKey);
   });
 }
 
-// ----------------------- Initialization -----------------------
-function wireEventListeners() {
-  const { minDbRange, maxDbRange, rangeWrap, toggleViewBtn } = DOM;
+function showConfirm({ title, message }) {
+  return new Promise((resolve) => {
+    DOM.confirmTitle.textContent = title;
+    DOM.confirmMessage.textContent = message;
+    DOM.customConfirm.classList.add("visible");
+    DOM.confirmOkBtn.focus();
+    const cleanup = (value) => {
+      DOM.customConfirm.classList.remove("visible");
+      DOM.confirmOkBtn.onclick = null;
+      DOM.confirmCancelBtn.onclick = null;
+      document.removeEventListener('keydown', handleKey);
+      resolve(value);
+    };
+    const handleKey = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); cleanup(true); } 
+      else if (e.key === 'Escape') { cleanup(false); }
+    };
+    DOM.confirmOkBtn.onclick = () => cleanup(true);
+    DOM.confirmCancelBtn.onclick = () => cleanup(false);
+    document.addEventListener('keydown', handleKey);
+  });
+}
 
+function wireEventListeners() {
   DOM.startTrimBtn?.addEventListener("click", handleStartTrimClick);
   DOM.pickBtn?.addEventListener("click", handlePickFileClick);
   DOM.fileInput?.addEventListener("change", handleFileInputChange);
 
-  toggleViewBtn?.addEventListener("click", () => {
-    if (!state.outputPath) return;
-    state.currentView = state.currentView === "raw" ? "cut" : "raw";
-    if (state.currentView === "raw") {
-      toggleViewBtn.classList.remove("active");
-      toggleViewBtn.title = "Switch to Trimmed video";
-      displayFileInformation(state.filePath);
+  DOM.toggleViewBtn?.addEventListener("click", () => {
+    const file = state.files[state.currentIndex];
+    if (!file || !file.outPath) return;
+
+    if (state.currentPreview === 'raw') {
+        state.currentPreview = 'trimmed';
+        displayFileInformation(file.outPath);
+        DOM.toggleViewBtn.classList.add('active');
+        DOM.toggleViewBtn.title = "Switch to Raw";
+        DOM.showBtn.onclick = () => window.sys.showInFolder(file.outPath);
+        DOM.playBtn.onclick = () => window.sys.openFile(file.outPath);
     } else {
-      toggleViewBtn.classList.add("active");
-      toggleViewBtn.title = "Switch to Raw video";
-      displayFileInformation(state.outputPath);
+        state.currentPreview = 'raw';
+        displayFileInformation(file.path);
+        DOM.toggleViewBtn.classList.remove('active');
+        DOM.toggleViewBtn.title = "Switch to Trimmed";
+        DOM.showBtn.onclick = () => window.sys.showInFolder(file.path);
+        DOM.playBtn.onclick = () => window.sys.openFile(file.path);
     }
   });
 
+  DOM.prevBtn?.addEventListener("click", () => {
+    if (state.currentIndex > 0) displayVideo(state.currentIndex - 1);
+  });
+  DOM.nextBtn?.addEventListener("click", () => {
+    if (state.currentIndex < state.files.length - 1) displayVideo(state.currentIndex + 1);
+  });
+
   DOM.inputDirBtn?.addEventListener("click", async () => {
-    try {
-      const res = await window.sys?.chooseDir?.({ title: "Select default input folder", defaultPath: state.defaultInputDir || "" });
-      if (res?.ok && res.path) { state.defaultInputDir = res.path; await window.sys?.setSettings?.({ defaultInputDir: res.path }); updateIoSummary(); }
-    } catch { }
+    const res = await window.sys?.chooseDir?.({ title: "Select default input folder", defaultPath: state.defaultInputDir || "" });
+    if (res?.ok && res.path) { state.defaultInputDir = res.path; await window.sys?.setSettings?.({ defaultInputDir: res.path }); updateIoSummary(); }
   });
   DOM.outputDirBtn?.addEventListener("click", async () => {
-    try {
-      const res = await window.sys?.chooseDir?.({ title: "Select default output folder", defaultPath: state.defaultOutputDir || "" });
-      if (res?.ok && res.path) { state.defaultOutputDir = res.path; await window.sys?.setSettings?.({ defaultOutputDir: res.path }); updateIoSummary(); }
-    } catch { }
+    const res = await window.sys?.chooseDir?.({ title: "Select default output folder", defaultPath: state.defaultOutputDir || "" });
+    if (res?.ok && res.path) { state.defaultOutputDir = res.path; await window.sys?.setSettings?.({ defaultOutputDir: res.path }); updateIoSummary(); }
   });
 
-  document.querySelectorAll(".vslider").forEach((s) => { updateSliderFill(s); s.addEventListener("input", () => updateSliderFill(s)); });
+  document.querySelectorAll(".vslider").forEach((s) => {
+    const p = ((s.value - s.min) / (s.max - s.min)) * 100;
+    s.style.setProperty("--p", `${p}%`);
+    s.addEventListener("input", () => {
+      const p = ((s.value - s.min) / (s.max - s.min)) * 100;
+      s.style.setProperty("--p", `${p}%`);
+    });
+  });
 
-  DOM.paramInfoBtn?.addEventListener("click", () => toggleParamView("info"));
-  DOM.viewPresetsBtn?.addEventListener("click", () => toggleParamView("presets"));
+  DOM.paramInfoBtn?.addEventListener("click", () => showParamView("info"));
+  DOM.viewPresetsBtn?.addEventListener("click", () => showParamView("presets"));
   DOM.addPresetBtn?.addEventListener("click", handleAddPreset);
   DOM.resetParamsBtn?.addEventListener("click", loadAndApplyParams);
   DOM.applyNoiseBtn?.addEventListener("click", () => {
-    const lo = Math.min(Number(minDbRange.value), Number(maxDbRange.value));
+    const lo = Math.min(Number(DOM.minDbRange.value), Number(DOM.maxDbRange.value));
     if (DOM.noiseDbSlider) { DOM.noiseDbSlider.value = String(lo); DOM.noiseDbSlider.dispatchEvent(new Event("input", { bubbles: true })); }
   });
-
-  Object.values(paramMap).forEach((m) => $(m.slider)?.addEventListener("input", updateSuggestedName));
+  
+  const bindVal = (id, fmt) => {
+      const i = $(id), v = $(id + "Val");
+      const up = () => { if (v) v.textContent = fmt(i.value); };
+      i.addEventListener("input", up); up();
+  };
   bindVal("#noiseDb", (v) => Number(v).toFixed(1));
   bindVal("#silenceS", (v) => Number(v).toFixed(2));
   bindVal("#padS", (v) => Number(v).toFixed(2));
   bindVal("#keepS", (v) => Number(v).toFixed(2));
-  makeSliderValueEditable("#noiseDbVal", "#noiseDb", Number);
-  makeSliderValueEditable("#silenceSVal", "#silenceS", Number);
-  makeSliderValueEditable("#padSVal", "#padS", Number);
-  makeSliderValueEditable("#keepSVal", "#keepS", Number);
-
-  [minDbRange, maxDbRange].forEach((inp) => inp?.addEventListener("input", () => {
+  
+  [DOM.minDbRange, DOM.maxDbRange].forEach((inp) => inp?.addEventListener("input", () => {
     updateRangeFill();
-    renderHist(state.lastXs, state.lastYs, Number(minDbRange.value), Number(maxDbRange.value));
+    if (state.files[state.currentIndex]?.analysis) {
+      renderHist(state.files[state.currentIndex].analysis.xs, state.files[state.currentIndex].analysis.ys);
+    }
   }));
-  wireRangeEditors();
 
-  function bringNearestFront(clientX) {
-    const rect = rangeWrap.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const valX = (inp) => ((Number(inp.value) - Number(inp.min)) / (Number(inp.max) - Number(inp.min) || 1)) * rangeWrap.clientWidth;
-    const xMin = valX(minDbRange), xMax = valX(maxDbRange);
-    const minIsNearest = Math.abs(x - xMin) <= Math.abs(x - xMax);
-    minDbRange.classList.toggle("front", minIsNearest);
-    maxDbRange.classList.toggle("front", !minIsNearest);
-  }
-  rangeWrap?.addEventListener("pointerdown", (e) => { if (Number.isFinite(e.clientX)) bringNearestFront(e.clientX); }, { capture: true });
-  ["mousemove", "touchmove", "pointermove"].forEach((evt) => {
-    rangeWrap?.addEventListener(evt, (e) => {
-      const cx = evt === "touchmove" ? e.touches?.[0]?.clientX ?? NaN : e.clientX ?? NaN;
-      if (Number.isFinite(cx)) bringNearestFront(cx);
-    }, { passive: true });
+  DOM.histChartCanvas?.addEventListener('click', (e) => {
+    if (!state.chart) return;
+
+    const chart = state.chart;
+    const xScale = chart.scales.x;
+    if (!xScale) return;
+
+    const rect = DOM.histChartCanvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const dbValue = xScale.getValueForPixel(clickX);
+    if (!Number.isFinite(dbValue)) return;
+    
+    const min = Number(DOM.minDbRange.min);
+    const max = Number(DOM.minDbRange.max);
+    const clampedValue = Math.max(min, Math.min(max, dbValue));
+
+    DOM.minDbRange.value = clampedValue;
+    DOM.minDbRange.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  [minDbRange, maxDbRange].forEach((inp) => inp?.addEventListener("pointerdown", () => {
-    minDbRange.classList.toggle("front", inp === minDbRange);
-    maxDbRange.classList.toggle("front", inp === maxDbRange);
-  }));
-
-  wireChartContextMenu();
-}
-
-function initializePlaceholderChart() {
-  try {
-    const xs = []; for (let x = -55; x <= -10; x += 0.1) xs.push(Number(x.toFixed(1)));
-    const ysRaw = xs.map((x) => {
-      const a = Math.exp(-Math.pow((x + 28) / 2.3, 2));
-      const b = 0.8 * Math.exp(-Math.pow((x + 21) / 3.2, 2));
-      return (a + b) * 1000;
-    });
-    const total = ysRaw.reduce((s, v) => s + v, 0) || 1;
-    const ys = ysRaw.map((v) => (v / total) * 100);
-    state.lastXs = xs; state.lastYs = ys;
-    renderHist(xs, ys, -50, -5);
-  } catch { }
 }
 
 async function initializeApp() {
@@ -759,9 +756,8 @@ async function initializeApp() {
   initializeBackendEventHandler();
   await loadSettings();
   await loadAndApplyParams();
-  resetPostRenderActions();
   updateRangeFill();
-  initializePlaceholderChart();
+  ensureChart();
 }
 
 document.addEventListener("DOMContentLoaded", initializeApp);
