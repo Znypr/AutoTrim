@@ -5,6 +5,12 @@ from collections import Counter
 from queue import Queue, Empty
 import atexit
 
+try:
+    import numpy as np
+except ImportError:
+    print("Error: numpy is required for audio analysis. Please run 'pip install numpy'", file=sys.stderr)
+    sys.exit(1)
+
 # ---- Globals -----------------------------------------------------------------
 
 CANCEL = threading.Event()
@@ -22,18 +28,15 @@ def kill_all_active_processes():
     for proc in ACTIVE_PROCESSES:
         try:
             if os.name == 'nt':
-                # On Windows, send a CTRL_BREAK_EVENT to the process group
                 proc.send_signal(signal.CTRL_BREAK_EVENT)
             else:
-                # On Unix-like systems, send SIGTERM to the entire process group
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             proc.wait(timeout=2)
         except Exception:
             try:
-                # Fallback to a forceful kill if graceful termination fails
                 proc.kill()
             except:
-                pass # Process may already be dead
+                pass
     ACTIVE_PROCESSES.clear()
 
 atexit.register(kill_all_active_processes)
@@ -54,7 +57,6 @@ def _popen_creation_flags():
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         return {"creationflags": CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP}
     else:
-        # Puts the child process in a new session and process group.
         return {"preexec_fn": os.setsid}
 
 def _patch_ffmpeg_path():
@@ -67,7 +69,6 @@ def _patch_ffmpeg_path():
 _patch_ffmpeg_path()
 
 def ffprobe_duration(path: str) -> float:
-    # This is a short, blocking call, so no special process group handling is needed.
     si = None
     flags = 0
     if os.name == "nt":
@@ -248,27 +249,18 @@ def detect_silences(input_path: str, noise: str, min_silence: float,
 
 def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
                             pad: float, keep: float) -> List[Tuple[float, float]]:
-    """
-    Identifies speaking segments by inverting silent segments, then pads,
-    and filters them. This implementation is robust against edge cases.
-    """
     if not starts and not ends:
         return [(0.0, dur)] if dur >= keep else []
 
     silent_intervals = list(zip(starts, ends))
-
     points = sorted(list(set([0.0, dur] + starts + ends)))
-
     speaking_intervals = []
     for i in range(len(points) - 1):
         start_point, end_point = points[i], points[i+1]
-
         if end_point - start_point < 0.01:
             continue
-
         mid_point = start_point + (end_point - start_point) / 2.0
         is_silent = any(s_start <= mid_point < s_end for s_start, s_end in silent_intervals)
-
         if not is_silent:
             speaking_intervals.append((start_point, end_point))
 
@@ -279,15 +271,12 @@ def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
     for s, e in speaking_intervals:
         padded_s = max(0.0, s - pad)
         padded_e = min(dur, e + pad)
-
         if not padded or padded_s > padded[-1][1]:
             padded.append((padded_s, padded_e))
         else:
             padded[-1] = (padded[-1][0], max(padded[-1][1], padded_e))
 
     return [(s, e) for s, e in padded if (e - s) >= keep]
-
-
 
 # ---- Cutting & concatenation (single encode) ---------------------------------
 
@@ -343,50 +332,99 @@ def trim_video(input_path: str, noise: str, silence: float, pad: float,
     cut_and_concat(input_path, segments, output_path, progress)
     return output_path
 
-# ---- Histogram ---------------------------------------------------------------
+# ---- NEW, ROBUST HISTOGRAM ANALYSIS ------------------------------------------
 
-def analyze_levels(input_path: str, dur: float, on_progress=None):
+def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]:
     """
-    Collect RMS levels while allowing cooperative cancellation via CANCEL.
-    Uses astats and run_ffmpeg_progress so CTRL_BREAK / SIGTERM works cleanly.
-    Returns a list of float dB values (RMS_level).
+    Analyzes audio levels by decoding the audio to raw PCM and calculating RMS
+    values in Python with numpy. This method is highly reliable and avoids
+    buggy FFmpeg filters.
     """
     vals = []
-
-    def _on_rms(v: float):
-        if math.isfinite(v):
-            vals.append(v)
-
+    sample_rate = 8000  # Downsample for faster processing
+    chunk_duration = 0.05  # 50ms chunks (20 chunks per second)
+    
+    # Each sample is 16-bit signed integer (2 bytes)
+    bytes_per_sample = 2
+    chunk_size = int(sample_rate * chunk_duration * bytes_per_sample)
+    total_bytes = int(dur * sample_rate * bytes_per_sample)
 
     cmd = [
-        "ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-y",
+        "ffmpeg", "-hide_banner", "-y",
         "-i", input_path,
-        "-af", "astats=metadata=1:reset=1:measure_overall=1:measure_perchannel=0",
-        "-f", "null", "-"
+        "-f", "s16le",             # Format: signed 16-bit little-endian PCM
+        "-ac", "1",                # Channels: 1 (mono)
+        "-ar", str(sample_rate),   # Sample rate
+        "-nostats",
+        "-"                        # Output to stdout
     ]
 
-    rc, _stderr = run_ffmpeg_progress(
+    proc = subprocess.Popen(
         cmd,
-        total=dur,
-        desc="analyze",
-        on_progress=on_progress,
-        on_rms=_on_rms
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **_popen_creation_flags()
     )
+    ACTIVE_PROCESSES.append(proc)
 
-    print("--- FFMPEG STDERR FOR ANALYSIS ---\n" + _stderr + "\n------------------------------------")
+    bytes_read = 0
+    try:
+        while not CANCEL.is_set():
+            chunk = proc.stdout.read(chunk_size)
+            if not chunk:
+                break
+            
+            bytes_read += len(chunk)
+            
+            # Convert binary chunk to numpy array of integers
+            samples = np.frombuffer(chunk, dtype=np.int16)
+            
+            if samples.size > 0:
+                # Calculate RMS (Root Mean Square)
+                rms = np.sqrt(np.mean(np.square(samples.astype(np.float64))))
+                
+                # Convert RMS to dBFS (decibels relative to full scale)
+                # 32767.0 is the maximum possible value for a 16-bit signed integer
+                if rms > 0:
+                    db = 20 * math.log10(rms / 32767.0)
+                    vals.append(db)
+                else:
+                    vals.append(-120.0) # Effectively negative infinity for silence
 
+            if on_progress and total_bytes > 0:
+                frac = min(1.0, bytes_read / total_bytes)
+                on_progress(frac)
+        
+        if CANCEL.is_set():
+            raise RuntimeError("CANCELLED")
 
-    if CANCEL.is_set():
-        raise RuntimeError("CANCELLED")
-
-    if rc != 0 and not vals:
-        raise RuntimeError("ffmpeg analyze failed")
+    finally:
+        # Ensure the process is terminated
+        try:
+            proc.kill()
+        except:
+            pass
+        if proc in ACTIVE_PROCESSES:
+            ACTIVE_PROCESSES.remove(proc)
+        # Drain pipes to prevent deadlocks on process exit
+        proc.stdout.read()
+        proc.stderr.read()
+        proc.wait()
+        
+    if not vals and not CANCEL.is_set():
+        stderr = proc.stderr.read().decode('utf-8', errors='replace')
+        if "No such file or directory" in stderr or "Invalid argument" in stderr:
+             raise RuntimeError(f"FFmpeg failed to open the file: {input_path}")
+        if "Stream specifier" in stderr and "matches no streams" in stderr:
+             raise RuntimeError("The input file does not contain an audio stream.")
+        raise RuntimeError("Audio analysis failed: FFmpeg produced no audio data.")
 
     return vals
 
+
 def plot_histogram(vals: List[float], binsize: float, min_db: float, max_db: float, outpath: str):
     try:
-        import numpy as np
         import matplotlib.pyplot as plt
         from matplotlib.ticker import PercentFormatter
     except Exception as e:

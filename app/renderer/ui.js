@@ -276,7 +276,9 @@ function updateSuggestedName() {
   const base = fileName.replace(/\.[^.]+$/, "");
   const v = getCurrentSliderValues();
   const n = Math.abs(parseInt(v.noise_db)), s = parseInt(v.silence * 100), p = parseInt(v.pad * 100), k = parseInt(v.keep * 100);
-  state.suggestedName = `${base}-N${n}-S${s}-P${p}-C${k}.mp4`;
+  //state.suggestedName = `${base}-N${n}-S${s}-P${p}-C${k}.mp4`;
+  state.suggestedName = `${base}-trim.mp4`;
+
   if (DOM.outMeta) DOM.outMeta.textContent = `Output: ${state.suggestedName}`;
 }
 
