@@ -325,8 +325,10 @@ body {
   gap: 4px;
 }
 
-.param-card.show-info .param-front { display: none; }
-.param-card.show-info .param-back { display: block; }
+.param-card.show-info {
+  display: flex;
+  justify-content: start; 
+}
 
 .legend {
   padding-left: 18px;
@@ -632,6 +634,11 @@ body {
   color: var(--txt);
   border-radius: 6px;
   box-sizing: border-box;
+}
+
+.modal-input:focus {
+  outline: none;
+  border-color: #f0f0f0;
 }
 
 .modal-actions {
