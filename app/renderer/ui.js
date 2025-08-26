@@ -78,7 +78,7 @@ const DEFAULT_PRESETS = [
   {
     id: 'default_tiktok',
     title: 'TikTok',
-    settings: { noise_db: -20.0, silence: 0.1, pad: 0.0, keep: 0.3 }
+    settings: { noise_db: -20.0, silence: 0.1, pad: 0.05, keep: 0.5 }
   }
 ];
 
