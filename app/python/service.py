@@ -13,7 +13,7 @@ JOBS = {}
 PARAM_CONFIG = {
     "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -25.0},
     "silence":  {"min": 0.1,   "max": 1.0,   "step": 0.1, "default": 0.1},
-    "pad":      {"min": 0.0,   "max": 1.0,   "step": 0.01,"default": 0.12},
+    "pad":      {"min": 0.0,   "max": 1.0,   "step": 0.01,"default": 0.10},
     "keep":     {"min": 0.1,   "max": 1.0,   "step": 0.05, "default": 0.50},
 }
 
@@ -72,7 +72,6 @@ def _run_trim_job(payload, job_id):
         return " ".join(shlex.quote(a) for a in args)
 
     def ffprobe_has_stream(path:str, kind:str) -> bool:
-        # kind: "v" or "a"
         try:
             out = subprocess.check_output(
                 ["ffprobe","-v","error","-select_streams", f"{kind}:0",
@@ -84,7 +83,7 @@ def _run_trim_job(payload, job_id):
             return False
 
     def send_ffmpeg_error(job_id, where:str, cmd:list[str], stderr_txt:str):
-        head = "\n".join((stderr_txt or "").splitlines()[:30])  # cap for UI
+        head = "\n".join((stderr_txt or "").splitlines()[:30]) 
         sys.stderr.write(f"[svc] ffmpeg {where} failed\n[svc] CMD: {shell_join(cmd)}\n[svc] STDERR:\n{head}\n")
         sys.stderr.flush()
         send("job", id=job_id, status="error",
@@ -127,18 +126,21 @@ def _run_trim_job(payload, job_id):
         hwaccel_args = _gpu_decode_args() if use_nvenc else []
 
         # ---------- Stage 1: detect ----------
-        def on_detect(fr): send("progress", stage="detect", value=max(0.0, min(1.0, fr)), hint_total=dur, job_id=job_id)
-        send("progress", stage="detect", value=0.01, hint_total=dur, job_id=job_id)
+        def on_detect(fr): send("progress", stage="detect", value=max(0.0, min(1.0, fr)), hint_total=dur, job_id=job_id, source_path=path)
+        send("progress", stage="detect", value=0.01, hint_total=dur, job_id=job_id, source_path=path)
 
         detect_cmd = [
             "ffmpeg","-hide_banner","-loglevel","info","-progress","pipe:1","-nostdin","-y",
             *hwaccel_args, "-threads","0", "-i", path,
-            "-af", f"silencedetect=noise={trim._noise_for_ffmpeg(f'{noise}dB')}:d={silence}",
+            # FIX: Build the filter string directly instead of using the removed trim._noise_for_ffmpeg()
+            "-af", f"silencedetect=noise={noise}dB:d={silence}",
             "-f","null","-"
         ]
         rc, detect_txt = trim.run_ffmpeg_progress(detect_cmd, dur, "detect", on_progress=on_detect)
         if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
-        if rc != 0:
+
+        # FIX: Only treat as a failure if the return code is bad AND we got no silence data.
+        if rc != 0 and "silence_start" not in detect_txt:
             send_ffmpeg_error(job_id, "detect", detect_cmd, detect_txt)
             return
 
@@ -157,8 +159,8 @@ def _run_trim_job(payload, job_id):
         total_dur = max(0.001, sum(e - s for s, e in clips))
 
         # ---------- Stage 2: render ----------
-        def on_render(fr): send("progress", stage="render", value=max(0.0, min(1.0, fr)), hint_total=total_dur, job_id=job_id)
-        send("progress", stage="render", value=0.0, hint_total=total_dur, job_id=job_id)
+        def on_render(fr): send("progress", stage="render", value=max(0.0, min(1.0, fr)), hint_total=total_dur, job_id=job_id, source_path=path)
+        send("progress", stage="render", value=0.0, hint_total=total_dur, job_id=job_id, source_path=path)
 
         vcodec_args = (["-c:v","h264_nvenc","-preset","p1","-cq","23"] if use_nvenc
                        else ["-c:v","libx264","-preset","ultrafast","-crf","23"])
@@ -326,6 +328,7 @@ def cleanup_and_exit(signum, frame):
     trim.kill_all_active_processes()
     executor.shutdown(wait=True)
     sys.exit(0)
+
 def cmd_get_params_config(_payload=None):
     return {"ok": True, "config": PARAM_CONFIG}
 
