@@ -157,42 +157,62 @@ function handleProgressUpdate(msg) {
 }
 
 function handleJobStatusUpdate(msg) {
-  const analysisFile = state.files.find(f => f.jobId === msg.id);
-  if (msg.kind === 'analyze' && analysisFile) {
-    if (['finished', 'cancelled', 'error'].includes(msg.status)) {
-      analysisFile.jobId = null;
-    }
-    if (state.files[state.currentIndex] === analysisFile && msg.status === "error") {
-      setStatus(`Analysis Failed.`);
-    }
-    return;
-  }
+  if (state.jobId && msg.id && msg.id !== state.jobId) return;
 
-  if (msg.kind === 'trim' && state.batchJobId) {
-    const trimFile = state.files.find(f => f.path === msg.source_path);
+  switch (msg.status) {
+    case "started":
+      state.jobId = msg.id || state.jobId;
+      setStartBtnActive();
+      if (msg.kind === "trim") setStatus("Detecting silences…");
+      else if (msg.kind === "analyze") setStatus("Analyzing histogram…");
+      else setStatus("Working…");
+      setProgress(0.01);
+      break;
 
-    if (trimFile) {
-      trimFile.status = msg.status;
-      if (msg.status === 'finished') {
-        trimFile.outPath = msg.output;
-        trimFile.progress = 1.0;
-        updateCollectiveProgress();
-      }
-    }
+    case "progress":
+      setProgress(Math.min(0.99, msg.progress ?? 0));
+      break;
 
-    const doneCount = state.files.filter(f => ['finished', 'error', 'cancelled'].includes(f.status)).length;
-
-    if (doneCount === state.files.length) {
-      const successCount = state.files.filter(f => f.status === 'finished').length;
-      setStatus(`Done. ${successCount} of ${state.files.length} finished.`);
-      setProgress(1.0);
-      state.batchJobId = null;
-      state.batchStartTime = null;
+    case "finished":
+      // hold “Done.” for a bit so late “Ready.” updates can’t overwrite it
+      state._statusHoldUntil = Date.now() + 3000;
+      state.jobId = null;
+      state.cancelling = false;
       setStartBtnIdle();
-      displayVideo(state.currentIndex);
-    }
+      setStatus("Done.");
+      setProgress(0);
+      resetPostRenderActions && resetPostRenderActions();
+      if (msg.kind === "trim" && msg.ok && msg.output) {
+        showPostRenderActions && showPostRenderActions(msg.output);
+      }
+      break;
+
+    case "error":
+      state._statusHoldUntil = Date.now() + 2500;
+      state.jobId = null;
+      state.cancelling = false;
+      setStartBtnIdle();
+      setStatus("Failed.");
+      setProgress(0);
+      break;
+
+    case "cancelled":
+      state._statusHoldUntil = Date.now() + 1500;
+      state.jobId = null;
+      state.cancelling = false;
+      setStartBtnIdle();
+      setStatus("Ready.");
+      setProgress(0);
+      break;
+
+    case "ready":
+      // This will be ignored during the hold window by setStatus()
+      setStatus("Ready.");
+      setProgress(0);
+      break;
   }
 }
+
 
 function handleAnalysisResult(msg) {
     const file = state.files.find(f => f.jobId === msg.job_id);
@@ -246,7 +266,12 @@ async function startAnalysisForIndex(index) {
     }
 }
 
-function setStatus(t) { DOM.status.textContent = t; }
+function setStatus(t) {
+  const now = Date.now();
+  if (t === "Ready." && state._statusHoldUntil && now < state._statusHoldUntil) return;
+  DOM.status.textContent = t;
+}
+
 function setProgress(v) { DOM.progress.value = Math.max(0, Math.min(1, v)); }
 
 function setStartBtnIdle() {
@@ -571,54 +596,75 @@ function formatDuration(totalSeconds) {
 }
 
 async function handleStartTrimClick() {
+  // If a batch is "active", this click cancels it
   if (state.batchJobId && !state.cancelling) {
     state.cancelling = true; setStartBtnCancelling();
     for (const file of state.files) {
-        if(file.jobId) await window.py.send("cancel", { job: file.jobId });
+      if (file.jobId) await window.py.send("cancel", { job: file.jobId });
     }
     state.batchJobId = null;
     state.batchStartTime = null;
     state.cancelling = false;
     setStartBtnIdle();
+    setStatus("Ready.");
+    setProgress(0);
     return;
   }
+
   if (state.files.length === 0) { setStatus("Select File(s)."); return; }
-  
+
+  // Prepare a new batch
   setStartBtnActive();
   setProgress(0);
-  setStatus("Starting...");
+  setStatus("Starting…");
   state.batchJobId = crypto.randomUUID();
   state.batchStartTime = Date.now();
 
+  // reset per-file state
   state.files.forEach(f => {
-      f.progress = 0;
-      f.status = null;
-      f.jobId = null;
-      f.stage = null;
-      f.outPath = null;
+    f.progress = 0;
+    f.status = null;
+    f.jobId = null;
+    f.stage = null;
+    f.outPath = null;
   });
 
+  let started = 0;     // <— track if any job actually starts
+  let errors  = 0;
+
+  // Kick off jobs (or mark error if user cancels save dialog)
   for (const file of state.files) {
     const suggestedName = (file.path.split(/[/\\]/).pop().replace(/\.[^.]+$/, "") || "video") + "-trim.mp4";
     const outRes = await window.sys.getDefaultSavePath({ suggestedName });
-    
-    if (outRes.ok) {
-        const payload = { ...getCurrentSliderValues(), path: file.path, out: outRes.path };
-        try {
-            const trimRes = await window.py.send("trim", payload);
-            if (trimRes?.ok && trimRes.job) {
-                file.jobId = trimRes.job;
-            } else {
-                file.status = 'error';
-            }
-        } catch {
-            file.status = 'error';
-        }
-    } else {
-        file.status = 'error'; // User cancelled save dialog
+    if (!outRes.ok) { file.status = 'error'; errors++; continue; }
+
+    const payload = { ...getCurrentSliderValues(), path: file.path, out: outRes.path };
+    try {
+      const trimRes = await window.py.send("trim", payload);
+      if (trimRes?.ok && trimRes.job) {
+        file.jobId = trimRes.job;
+        file.status = 'started';
+        started++;
+      } else {
+        file.status = 'error';
+        errors++;
+      }
+    } catch {
+      file.status = 'error';
+      errors++;
     }
   }
+
+  // If nothing started, clear the batch state so the next click isn't treated as "Cancel"
+  if (started === 0) {
+    state.batchJobId = null;
+    state.batchStartTime = null;
+    setStartBtnIdle();
+    setStatus(errors > 0 ? "Ready. (Nothing started)" : "Ready.");
+    setProgress(0);
+  }
 }
+
 
 async function handlePickFileClick() {
   try {
