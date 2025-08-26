@@ -73,7 +73,11 @@ def _detect_silences(path, dur, noise, silence, on_progress_callback):
     """
     detect_cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "info", "-progress", "pipe:1", "-nostdin", "-y",
-        "-threads", "0", "-i", path,
+        "-vn", 
+        "-ac", "1", 
+        "-ar", "8000",
+        "-threads", "1",
+        "-i", path,
         "-af", f"silencedetect=noise={noise}dB:d={silence}",
         "-f", "null", "-"
     ]
@@ -185,6 +189,7 @@ def _run_trim_job(payload, job_id):
             send("job", id=job_id, status="error", error=error_str, kind="trim", source_path=payload.get("path"))
     finally:
         JOBS.pop(job_id, None)
+
 def cmd_analyze(payload):
     job_id = _new_job_id()
     cancel_ev = threading.Event()

@@ -167,7 +167,7 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
                 pass
             
             if q_out.empty() and q_err.empty():
-                time.sleep(0.05)
+                time.sleep(0.2)   
 
         proc.wait()
         return proc.returncode or 0, "".join(stderr_buf)
@@ -217,7 +217,7 @@ def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]
     """
     vals = []
     sample_rate = 8000
-    chunk_duration = 0.05
+    chunk_duration = 0.2
     bytes_per_sample = 2
     chunk_size = int(sample_rate * chunk_duration * bytes_per_sample)
     total_bytes = int(dur * sample_rate * bytes_per_sample)
