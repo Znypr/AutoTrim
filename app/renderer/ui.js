@@ -213,36 +213,36 @@ function resetPostRenderActions() {
   }
 }
 
-function showPostRenderActions(outPath) {
-  const i = state.currentIndex;
-  const f = state.files?.[i];
-  if (!f || !outPath) return;
+function showPostRenderActions(outPath, sourcePath) {
+  const idx = typeof sourcePath === "string"
+    ? state.files.findIndex(f => f.path === sourcePath)
+    : state.currentIndex;
 
-  // persist result for the current file
+  if (idx < 0) return;
+  const f = state.files[idx];
+  if (!outPath) return;
+
   f.outPath = outPath;
   f.status = 'finished';
 
-  // (re)enable the toggle and default to showing the trimmed file
+  if (idx !== state.currentIndex) return;
+
   DOM.toggleViewBtn.style.display = 'inline-block';
   DOM.toggleViewBtn.disabled = false;
 
-  // switch the UI to trimmed so user can immediately play/preview it
   state.currentPreview = 'trimmed';
   DOM.toggleViewBtn.classList.add('active');
   DOM.toggleViewBtn.title = "Switch to Raw";
 
-  // wire the action buttons to the trimmed file
   DOM.showBtn.disabled = false;
   DOM.playBtn.disabled = false;
-  DOM.showBtn.onclick = () => window.sys.showInFolder(f.outPath);
-  DOM.playBtn.onclick = () => window.sys.openFile(f.outPath);
+  DOM.showBtn.onclick = () => sys.showInFolder(f.outPath);
+  DOM.playBtn.onclick = () => sys.openFile(f.outPath);
 
-  // refresh the info panel with the trimmed file’s metadata/thumbnail
   displayFileInformation(f.outPath);
-
-  // update the nav status (keeps your existing UI consistent)
-  DOM.navStatus.textContent = `${i + 1} of ${state.files.length}`;
+  DOM.navStatus.textContent = `${idx + 1} of ${state.files.length}`;
 }
+
 
 
 function handleJobStatusUpdate(msg) {
@@ -263,16 +263,16 @@ function handleJobStatusUpdate(msg) {
       break;
 
     case "finished":
-      // hold “Done.” for a bit so late “Ready.” updates can’t overwrite it
       state._statusHoldUntil = Date.now() + 3000;
       state.jobId = null;
       state.cancelling = false;
       setStartBtnIdle();
       setStatus("Done.");
       setProgress(0);
-      resetPostRenderActions && resetPostRenderActions();
       if (msg.kind === "trim" && msg.ok && msg.output) {
-        showPostRenderActions && showPostRenderActions(msg.output);
+        showPostRenderActions(msg.output, msg.source_path); // <-- pass source_path
+      } else {
+        resetPostRenderActions && resetPostRenderActions();
       }
       break;
 
@@ -378,49 +378,48 @@ function setStartBtnCancelling() {
 }
 
 async function displayVideo(index) {
-    if (index < 0 || index >= state.files.length) {
-        DOM.showBtn.disabled = true;
-        DOM.playBtn.disabled = true;
-        DOM.toggleViewBtn.style.display = 'none';
-        DOM.toggleViewBtn.disabled = true;
-        DOM.showBtn.onclick = null;
-        DOM.playBtn.onclick = null;
-        return;
-    }
-    
-    state.currentIndex = index;
-    const file = state.files[index];
+  if (index < 0 || index >= state.files.length) {
+    DOM.showBtn.disabled = true;
+    DOM.playBtn.disabled = true;
+    DOM.toggleViewBtn.style.display = 'none';
+    DOM.toggleViewBtn.disabled = true;
+    DOM.showBtn.onclick = null;
+    DOM.playBtn.onclick = null;
+    return;
+  }
 
-    DOM.showBtn.disabled = false;
-    DOM.playBtn.disabled = false;
-    DOM.showBtn.onclick = () => window.sys.showInFolder(file.path);
-    DOM.playBtn.onclick = () => window.sys.openFile(file.path);
+  state.currentIndex = index;
+  const file = state.files[index];
 
-    if (file.outPath && file.status === 'finished') {
-        DOM.toggleViewBtn.style.display = 'inline-block';
-        DOM.toggleViewBtn.disabled = false;
-    } else {
-        DOM.toggleViewBtn.style.display = 'none';
-        DOM.toggleViewBtn.disabled = true;
-    }
+  DOM.showBtn.disabled = false;
+  DOM.playBtn.disabled = false;
+  DOM.showBtn.onclick = () => sys.showInFolder(file.path);
+  DOM.playBtn.onclick = () => sys.openFile(file.path);
 
-    state.currentPreview = 'raw';
-    DOM.toggleViewBtn.classList.remove('active');
-    DOM.toggleViewBtn.title = "Switch to Trimmed";
+  if (file.outPath) {
+    DOM.toggleViewBtn.style.display = 'inline-block';
+    DOM.toggleViewBtn.disabled = false;
+  } else {
+    DOM.toggleViewBtn.style.display = 'none';
+    DOM.toggleViewBtn.disabled = true;
+  }
 
-    DOM.navStatus.textContent = `${index + 1} of ${state.files.length}`;
-    DOM.prevBtn.disabled = index === 0;
-    DOM.nextBtn.disabled = index === state.files.length - 1;
+  state.currentPreview = 'raw';
+  DOM.toggleViewBtn.classList.remove('active');
+  DOM.toggleViewBtn.title = "Switch to Trimmed";
 
-    await displayFileInformation(file.path);
+  DOM.navStatus.textContent = `${index + 1} of ${state.files.length}`;
+  await displayFileInformation(file.path);
 
-    if (file.analysis) {
-        renderHist(file.analysis.xs, file.analysis.ys);
-        setStatus("Ready.");
-    } else {
-        startAnalysisForIndex(index);
-    }
+  if (file.analysis) {
+    renderHist(file.analysis.xs, file.analysis.ys);
+    setStatus("Ready.");
+    setProgress(0);
+  } else {
+    startAnalysisForIndex(index);
+  }
 }
+
 
 async function loadFiles(paths) {
     if (!paths || paths.length === 0) return;
