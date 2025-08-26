@@ -1,28 +1,3 @@
-// @ts-check
-
-/** @typedef {"queued"|"started"|"progress"|"finished"|"error"|"cancelled"|"ready"} JobStatus */
-/** @typedef {"trim"|"analyze"} JobKind */
-/** @typedef {{ id?: string, status: JobStatus, kind?: JobKind, progress?: number, ok?: boolean, output?: string, source_path?: string, job_id?: string, stage?: string, value?: number }} JobEvent */
-
-/** @typedef {{ path:string, duration?:number, outPath?:string|null, status?:JobStatus|null, jobId?:string|null, progress?:number, stage?:string|null, analysis?:{xs:number[],ys:number[]} | null }} FileItem */
-
-/** @type {{
- *  files: FileItem[],
- *  currentIndex: number,
- *  jobId: string|null,
- *  batchJobId: string|null,
- *  totalBatchDuration: number,
- *  batchStartTime: number|null,
- *  cancelling: boolean,
- *  chart: any,
- *  defaultInputDir: string|null,
- *  defaultOutputDir: string|null,
- *  currentPreview: "raw"|"trimmed",
- *  presets: any[],
- *  view?: "raw"|"trim",
- *  _statusHoldUntil?: number
- * }}
- */
 
 "use strict";
 
