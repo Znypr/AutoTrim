@@ -21,7 +21,7 @@ def kill_all_active_processes():
     for proc in ACTIVE_PROCESSES:
         try:
             if os.name == 'nt':
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
+                proc.terminate()
             else:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             proc.wait(timeout=2)
@@ -46,8 +46,8 @@ def _popen_creation_flags():
     """Returns Popen kwargs for a hidden window on Windows."""
     if os.name == "nt":
         CREATE_NO_WINDOW = 0x08000000
-        CREATE_NEW_PROCESS_GROUP = 0x00000200
-        return {"creationflags": CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP}
+        # Using CREATE_NEW_PROCESS_GROUP with redirected stdio can cause deadlocks
+        return {"creationflags": CREATE_NO_WINDOW}
     else:
         return {"preexec_fn": os.setsid}
 
@@ -131,7 +131,7 @@ def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
             if CANCEL.is_set():
                 try:
                     if os.name == 'nt':
-                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                        proc.terminate()
                     else:
                         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     proc.wait(timeout=5)

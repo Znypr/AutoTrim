@@ -7,6 +7,7 @@ const state = {
   currentIndex: -1,
   batchJobId: null,
   totalBatchDuration: 0,
+  batchStartTime: null,
   cancelling: false,
   chart: null,
   defaultInputDir: null,
@@ -90,8 +91,16 @@ function initializeBackendEventHandler() {
   });
 }
 
+function formatEta(seconds) {
+    if (!isFinite(seconds) || seconds < 1) return '...';
+    const s = Math.round(seconds);
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}m${String(sec).padStart(2, '0')}s`;
+}
+
 function updateCollectiveProgress() {
-    if (!state.batchJobId || state.totalBatchDuration === 0) return;
+    if (!state.batchJobId || state.totalBatchDuration <= 0) return;
 
     let totalProgressSeconds = 0;
     for (const file of state.files) {
@@ -108,28 +117,40 @@ function updateCollectiveProgress() {
     const activeFiles = state.files.filter(f => f.status === 'started' && f.stage);
     const activeStages = [...new Set(activeFiles.map(f => f.stage))];
 
-    let stageText = '';
-    if (activeStages.length > 0) {
-        const formattedStages = activeStages.map(s => s.charAt(0).toUpperCase() + s.slice(1));
-        stageText = ` [${formattedStages.join(', ')}]`;
+    let stageText = 'Processing';
+    if (activeStages.length === 1) {
+        const stage = activeStages[0];
+        stageText = stage.charAt(0).toUpperCase() + stage.slice(1) + 'ing';
     }
 
-    setStatus(`Processing (${(collectiveFraction * 100).toFixed(0)}%)...${stageText}`);
+    const percent = (collectiveFraction * 100).toFixed(0);
+    let etaText = '';
+    const elapsed = state.batchStartTime ? (Date.now() - state.batchStartTime) / 1000 : 0;
+
+    if (elapsed > 2 && collectiveFraction > 0.01 && collectiveFraction < 1.0) {
+        const totalEstimatedTime = elapsed / collectiveFraction;
+        const remainingTime = totalEstimatedTime - elapsed;
+        etaText = ` - ETA: ${formatEta(remainingTime)}`;
+    }
+
+    setStatus(`${stageText} ${percent}%${etaText}`);
 }
+
 
 function handleProgressUpdate(msg) {
   if (msg.stage === 'analyze') {
       const p = Math.max(0, Math.min(1, Number(msg.value) || 0));
       setProgress(p);
-      setStatus(`Analyzing... (${(p * 100).toFixed(0)}%)`);
+      setStatus(`Analyzing ${ (p * 100).toFixed(0) }%`);
       return;
   }
 
   if (state.batchJobId) {
-    const file = state.files.find(f => f.jobId === msg.job_id);
+    const file = state.files.find(f => f.jobId === msg.job_id || f.path === msg.source_path);
     if (file) {
       file.progress = Math.max(0, Math.min(1, Number(msg.value) || 0));
       file.stage = msg.stage || 'working';
+      file.status = 'started';
       updateCollectiveProgress();
     }
   }
@@ -163,9 +184,10 @@ function handleJobStatusUpdate(msg) {
 
     if (doneCount === state.files.length) {
       const successCount = state.files.filter(f => f.status === 'finished').length;
-      setStatus(`Done. ${successCount}/${state.files.length}`);
+      setStatus(`Done. ${successCount} of ${state.files.length} finished.`);
       setProgress(1.0);
       state.batchJobId = null;
+      state.batchStartTime = null;
       setStartBtnIdle();
       displayVideo(state.currentIndex);
     }
@@ -397,7 +419,7 @@ async function savePresets() {
 function renderPresets() {
   const list = DOM.presetList, tpl = DOM.presetItemTemplate;
   if (!list || !tpl) return;
-  list.innerHTML = state.presets.length > 1 ? "" : `<li class="preset-item-empty">No presets saved.</li>`;
+  list.innerHTML = state.presets.length > 0 ? "" : `<li class="preset-item-empty">No presets saved.</li>`;
   
   state.presets.forEach((p) => {
     const item = tpl.content.cloneNode(true).querySelector(".preset-item");
@@ -555,6 +577,7 @@ async function handleStartTrimClick() {
         if(file.jobId) await window.py.send("cancel", { job: file.jobId });
     }
     state.batchJobId = null;
+    state.batchStartTime = null;
     state.cancelling = false;
     setStartBtnIdle();
     return;
@@ -565,12 +588,14 @@ async function handleStartTrimClick() {
   setProgress(0);
   setStatus("Starting...");
   state.batchJobId = crypto.randomUUID();
+  state.batchStartTime = Date.now();
 
   state.files.forEach(f => {
       f.progress = 0;
       f.status = null;
       f.jobId = null;
       f.stage = null;
+      f.outPath = null;
   });
 
   for (const file of state.files) {
@@ -590,7 +615,7 @@ async function handleStartTrimClick() {
             file.status = 'error';
         }
     } else {
-        file.status = 'error';
+        file.status = 'error'; // User cancelled save dialog
     }
   }
 }
@@ -618,8 +643,8 @@ async function handleFileInputChange(e) {
 }
 
 function handleAddPreset() {
-  const title = `Preset ${state.presets.length + 1}`;
-  state.presets.push({ id: Date.now(), title: title, settings: getCurrentSliderValues() });
+  const title = `Preset ${state.presets.filter(p => !p.id.startsWith('default_')).length + 1}`;
+  state.presets.push({ id: `user_${Date.now()}`, title: title, settings: getCurrentSliderValues() });
   savePresets();
   renderPresets();
   showParamView("presets");

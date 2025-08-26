@@ -1,10 +1,11 @@
 # python/service.py
 
-import sys, json, os, traceback, subprocess, base64, tempfile, signal, time, shutil
+import sys, json, os, traceback, subprocess, base64, tempfile, signal, time, shutil, shlex, tempfile
 import trim
 import threading, uuid, re
 import collections, math
 from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 
 MAX_WORKERS = max(1, os.cpu_count() // 2)
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
@@ -39,6 +40,13 @@ def cleanup_old_partials():
     except Exception:
         pass
 
+def _is_nvenc_open_error(stderr_txt:str) -> bool:
+    s = (stderr_txt or "").lower()
+    return ("openencodesessionex failed" in s or
+            "could not open encoder" in s or
+            "error while opening encoder" in s or
+            "h264_nvenc" in s and "invalid argument" in s)
+
 def _has_nvenc():
     try:
         out = subprocess.check_output(["ffmpeg","-hide_banner","-encoders"], text=True, creationflags=CREATE_NO_WINDOW)
@@ -53,7 +61,7 @@ def _gpu_decode_args():
             "ffmpeg", "-hide_banner", "-hwaccels"
         ], text=True, creationflags=CREATE_NO_WINDOW)
         if "cuda" in out:
-            return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+            return ["-hwaccel", "cuda"]
     except Exception:
         pass
     return []
@@ -65,26 +73,23 @@ def send(evt, **data):
     sys.stdout.write(json.dumps({"event": evt, **data}) + "\n")
     sys.stdout.flush()
 
-
 def _detect_silences(path, dur, noise, silence, on_progress_callback):
     """
-    Runs FFmpeg silencedetect using the reliable CPU path and returns silent timestamps.
-    Hardware acceleration is intentionally disabled here to prevent premature exits on long files.
+    Runs FFmpeg silencedetect using a simplified, direct analysis method to improve reliability.
     """
     detect_cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "info", "-progress", "pipe:1", "-nostdin", "-y",
-        "-vn", 
-        "-ac", "1", 
-        "-ar", "8000",
-        "-threads", "1",
+        "ffmpeg", "-hide_banner", "-loglevel", "info", "-progress", "pipe:1", "-nostdin",
         "-i", path,
         "-af", f"silencedetect=noise={noise}dB:d={silence}",
+        "-vn",          # Ignore video stream
         "-f", "null", "-"
     ]
     rc, detect_txt = trim.run_ffmpeg_progress(detect_cmd, dur, "detect", on_progress=on_progress_callback)
     if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
 
     if rc != 0 and "silence_start" not in detect_txt:
+        if "Stream specifier" in detect_txt and "does not match any streams" in detect_txt:
+             raise RuntimeError("The input file does not contain an audio stream.")
         raise RuntimeError({"cmd": detect_cmd, "stderr": detect_txt})
 
     starts = [float(x) for x in re.findall(r"silence_start:\s*(\d+\.?\d*)", detect_txt)]
@@ -95,36 +100,130 @@ def _detect_silences(path, dur, noise, silence, on_progress_callback):
     return starts, ends
 
 def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio, hwaccel_args, on_progress_callback):
-    """Builds and runs the complex FFmpeg command to render the final trimmed video, using hardware acceleration if available."""
-    vcodec_args = (["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"] if use_nvenc
-                   else ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"])
-    acodec_args = (["-c:a", "aac", "-b:a", "160k"] if has_audio else [])
+    vcodec_nv = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"]
+    vcodec_sw = ["-c:v", "libx264",   "-preset", "veryfast", "-crf", "23"]
+    acodec    = (["-c:a", "aac", "-b:a", "160k"] if has_audio else [])
+    filt_nv   = ["-vf", "format=nv12"]
+    filt_sw   = []
+
+    def _run(cmd, length, desc):
+        return trim.run_ffmpeg_progress(cmd, length, desc, on_progress_callback)
+
+    def _single(st, et):
+        length = max(0.001, et - st)
+        base = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
+                "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}", "-threads","0",
+                "-map","0:v:0"] + (["-map","0:a:0"] if has_audio else ["-an"]) + ["-movflags","+faststart"]
+
+        if use_nvenc:
+            cmd_nv = base[:1] + base[1:2] + base[2:]  # keep order stable
+            cmd_nv = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
+                      *hwaccel_args, "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
+                      "-threads","0", *filt_nv, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                      *vcodec_nv, *acodec, "-movflags","+faststart", tmp_out]
+            rc, err = _run(cmd_nv, length, "render")
+            if rc == 0: 
+                return
+            if _is_nvenc_open_error(err):
+                cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
+                          "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
+                          "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                          *vcodec_sw, *acodec, "-movflags","+faststart", tmp_out]
+                rc2, err2 = _run(cmd_sw, length, "render")
+                if rc2 == 0:
+                    return
+                raise RuntimeError(f"SW fallback failed: {' '.join(cmd_sw)}\n{err2}")
+            raise RuntimeError(f"Failed: {' '.join(cmd_nv)}\n{err}")
+        else:
+            cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
+                      "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
+                      "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                      *vcodec_sw, *acodec, "-movflags","+faststart", tmp_out]
+            rc, err = _run(cmd_sw, length, "render")
+            if rc != 0:
+                raise RuntimeError(f"Failed: {' '.join(cmd_sw)}\n{err}")
+
+    def _parallel_concat():
+        clip_dir = os.path.join(tempfile.gettempdir(), f"autotrim_clips_{uuid.uuid4().hex}")
+        os.makedirs(clip_dir, exist_ok=True)
+        try:
+            completed = 0.0
+            lock = threading.Lock()
+            futures = []
+
+            def create_clip(i, st, et):
+                length = max(0.001, et - st)
+                target = os.path.join(clip_dir, f"clip_{i:04d}.mp4")
+                if use_nvenc:
+                    cmd_nv = ["ffmpeg","-hide_banner","-loglevel","error","-y", *hwaccel_args,
+                              "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
+                              "-threads","0", *filt_nv, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                              *vcodec_nv, *acodec, "-movflags","+faststart", target]
+                    rc, err = trim.run_ffmpeg_progress(cmd_nv, length, f"clip {i+1}/{len(clips)}")
+                    if rc == 0:
+                        return length, target
+                    if _is_nvenc_open_error(err):
+                        cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-y",
+                                  "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
+                                  "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                                  *vcodec_sw, *acodec, "-movflags","+faststart", target]
+                        rc2, err2 = trim.run_ffmpeg_progress(cmd_sw, length, f"clip {i+1}/{len(clips)}")
+                        if rc2 == 0:
+                            return length, target
+                        raise RuntimeError(f"Failed to create clip {i}: {' '.join(cmd_sw)}\n{err2}")
+                    raise RuntimeError(f"Failed to create clip {i}: {' '.join(cmd_nv)}\n{err}")
+                else:
+                    cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-y",
+                              "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
+                              "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                              *vcodec_sw, *acodec, "-movflags","+faststart", target]
+                    rc, err = trim.run_ffmpeg_progress(cmd_sw, length, f"clip {i+1}/{len(clips)}")
+                    if rc != 0:
+                        raise RuntimeError(f"Failed to create clip {i}: {' '.join(cmd_sw)}\n{err}")
+                    return length, target
+
+            for i, (st, et) in enumerate(clips):
+                futures.append(executor.submit(create_clip, i, st, et))
+
+            ordered = ["" for _ in clips]
+            for fut in concurrent.futures.as_completed(futures):
+                if trim.CANCEL.is_set():
+                    for f in futures: f.cancel()
+                    raise RuntimeError("CANCELLED")
+                length, path_clip = fut.result()
+                idx = int(os.path.splitext(os.path.basename(path_clip))[0].split('_')[1])
+                ordered[idx] = path_clip
+                with lock:
+                    completed += length
+                    on_progress_callback(min(0.99, completed / total_dur))
+
+            concat_list = os.path.join(clip_dir, "concat_list.txt")
+            with open(concat_list, "w", encoding="utf-8") as f:
+                for p in ordered:
+                    f.write(f"file '{os.path.basename(p)}'\n")
+
+            on_progress_callback(0.99)
+            cmd_concat = ["ffmpeg","-hide_banner","-loglevel","error","-y",
+                          "-f","concat","-safe","0","-i","concat_list.txt","-c","copy", os.path.abspath(tmp_out)]
+            proc = subprocess.Popen(cmd_concat, cwd=clip_dir, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, encoding="utf-8", **trim._popen_creation_flags())
+            _, err = proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError({"cmd": " ".join(cmd_concat), "stderr": err})
+            on_progress_callback(1.0)
+        finally:
+            try: shutil.rmtree(clip_dir)
+            except OSError: pass
 
     if len(clips) == 1:
         st, et = clips[0]
-        render_len = max(0.001, et - st)
-        base = ["ffmpeg", "-hide_banner", "-loglevel", "verbose", "-progress", "pipe:1", "-nostdin", "-y", *hwaccel_args, "-threads", "0", "-ss", f"{st:.6f}", "-i", path, "-t", f"{render_len:.6f}"]
-        maps = ["-map", "0:v:0"] + (["-map", "0:a:0"] if has_audio else ["-an"])
-        cmd = base + maps + vcodec_args + (acodec_args if has_audio else []) + ["-movflags", "+faststart", tmp_out]
+        _single(st, et)
     else:
-        render_len = total_dur
-        vf_parts = [f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{idx}]" for idx, (st, et) in enumerate(clips)]
-        af_parts = [f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS,aresample=async=1[a{idx}]" for idx, (st, et) in enumerate(clips)] if has_audio else []
-        concat_inputs = "".join([f"[v{idx}]" + (f"[a{idx}]" if has_audio else "") for idx in range(len(clips))])
-        fc_parts = vf_parts + af_parts
-        maps = ["-map", "[v]", "-map", "[a]"] if has_audio else ["-map", "[v]", "-an"]
-        fc_parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a={1 if has_audio else 0}[v]" + ("[a]" if has_audio else ""))
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "verbose", "-progress", "pipe:1", "-nostdin", "-y", "-threads", "0", "-i", path, "-filter_complex", ";".join(fc_parts), *maps, *vcodec_args, *(acodec_args if has_audio else []), "-movflags", "+faststart", tmp_out]
+        _parallel_concat()
 
-    rc, stderr_txt = trim.run_ffmpeg_progress(cmd, total=render_len, desc="render", on_progress=on_progress_callback)
-    if trim.CANCEL.is_set(): raise RuntimeError("CANCELLED")
-    if rc != 0:
-        if os.path.isfile(tmp_out): os.remove(tmp_out)
-        raise RuntimeError({"cmd": cmd, "stderr": stderr_txt})
-
-def _run_trim_job(payload, job_id):
+def _run_trim_job(payload, job_id, cancel_ev):
     """Orchestrates the trimming process by calling helper functions."""
-    # Define nested helpers here as they are job-specific
     def ffprobe_has_stream(path:str, kind:str) -> bool:
         try:
             return bool(subprocess.check_output(["ffprobe","-v","error","-select_streams",f"{kind}:0","-show_entries","stream=index","-of","csv=p=0",path],text=True,creationflags=CREATE_NO_WINDOW).strip())
@@ -132,13 +231,14 @@ def _run_trim_job(payload, job_id):
 
     def send_ffmpeg_error(where:str, cmd:list[str], stderr_txt:str):
         head = "\n".join((stderr_txt or "").splitlines()[:30])
-        sys.stderr.write(f"[svc] ffmpeg {where} failed\n[svc] CMD: {' '.join(shlex.quote(a) for a in cmd)}\n[svc] STDERR:\n{head}\n")
+        cmd_str = ' '.join(shlex.quote(a) for a in cmd)
+        sys.stderr.write(f"[svc] ffmpeg {where} failed\n[svc] CMD: {cmd_str}\n[svc] STDERR:\n{head}\n")
         sys.stderr.flush()
         send("job",id=job_id,status="error",error=f"{where} failed. See logs.\n{head}",kind="trim",source_path=payload.get("path"))
 
     try:
         # 1. Setup
-        trim.CANCEL = JOBS[job_id]["cancel"]
+        trim.CANCEL = cancel_ev
         path, out = payload.get("path"), payload.get("out")
         noise, silence = float(payload.get("noise_db")), float(payload.get("silence"))
         pad, keep = float(payload.get("pad")), float(payload.get("keep"))
@@ -168,10 +268,17 @@ def _run_trim_job(payload, job_id):
         clips = [(max(0.0, s), max(s + 0.01, e - 0.01)) for s, e in segs if (e - s) > 0.01]
         total_dur = max(0.001, sum(e - s for s, e in clips))
 
-        # 5. Stage 2: Render Video (on GPU if available)
+        # 5. Stage 2: Render Video (on CPU for reliability)
         def on_render(fr): send("progress", stage="render", value=fr, hint_total=total_dur, job_id=job_id, source_path=path, kind="trim")
         send("progress", stage="render", value=0.0, hint_total=total_dur, job_id=job_id, source_path=path, kind="trim")
-        _render_trimmed_video(path, tmp_out, clips, total_dur, _has_nvenc(), ffprobe_has_stream(path, "a"), _gpu_decode_args() if _has_nvenc() else [], on_render)
+        
+        # -- MODIFICATION: Hardware acceleration is disabled to improve reliability --
+        use_hw_accel = True
+        _render_trimmed_video(path, tmp_out, clips, total_dur, 
+                              use_nvenc=(use_hw_accel and _has_nvenc()), 
+                              has_audio=ffprobe_has_stream(path, "a"), 
+                              hwaccel_args=(_gpu_decode_args() if use_hw_accel and _has_nvenc() else []), 
+                              on_progress_callback=on_render)
         
         # 6. Finalize
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
@@ -186,7 +293,8 @@ def _run_trim_job(payload, job_id):
             ffmpeg_error = e.args[0]
             send_ffmpeg_error("operation", ffmpeg_error["cmd"], ffmpeg_error["stderr"])
         else:
-            send("job", id=job_id, status="error", error=error_str, kind="trim", source_path=payload.get("path"))
+            send("job", id=job_id, status="error", error=str(e), kind="trim", source_path=payload.get("path"))
+            traceback.print_exc(file=sys.stderr)
     finally:
         JOBS.pop(job_id, None)
 
@@ -237,6 +345,7 @@ def cmd_analyze(payload):
                 send("job", id=job_id, status="error", error=str(e), kind="analyze")
         except Exception as e:
             send("job", id=job_id, status="error", error=str(e), kind="analyze")
+            traceback.print_exc(file=sys.stderr)
         finally:
             JOBS.pop(job_id, None)
 
@@ -250,7 +359,7 @@ def cmd_trim(payload):
     """Submits a trim job to the thread pool executor."""
     job_id = _new_job_id()
     cancel_ev = threading.Event()
-    future = executor.submit(_run_trim_job, payload, job_id)
+    future = executor.submit(_run_trim_job, payload, job_id, cancel_ev)
     JOBS[job_id] = {"cancel": cancel_ev, "future": future}
     send("job", id=job_id, status="started", kind="trim", source_path=payload.get("path"))
     return {"ok": True, "job": job_id}
@@ -339,7 +448,6 @@ def main():
             traceback.print_exc()
             res = {"ok": False, "error": str(e)}
         sys.stdout.write(json.dumps(res) + "\n"); sys.stdout.flush()
-
 
 if __name__ == "__main__":
     main()
