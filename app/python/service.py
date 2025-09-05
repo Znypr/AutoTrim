@@ -124,12 +124,15 @@ def _detect_silences(path, dur, noise, silence, on_progress_callback):
 
 def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio, hwaccel_args, on_progress_callback):
     """
-    Single-pass trim+concat with robust mobile (VFR/edit list) handling.
-    Always outputs CFR matching source's nominal fps (snapped to standard rates).
-    Keeps A/V in sync by resampling audio AFTER concat and resetting PTS.
-    NVENC used when available, with automatic SW fallback.
+    Single-pass trim+concat using a filter script file (avoids long cmd lines).
+    - Works with VBR/VFR/mobile inputs.
+    - Keeps A/V in sync by resampling audio AFTER concat.
+    - Forces constant FPS AFTER concat (snapped to common rates).
+    - Keeps -ignore_editlist since we now read the original MP4 directly.
+    - NVENC with graceful SW fallback.
     """
-    import json, subprocess
+    import json, subprocess, tempfile as _tmp, os as _os, shutil as _sh
+    from typing import Optional
 
     # --- Helpers: choose a good CFR target from the source ---
     def _parse_rat(s: str) -> float:
@@ -154,7 +157,6 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
         return r, a
 
     def _snap_rate(fps_float: float) -> Optional[str]:
-        # snap within ~0.2% to common broadcast rates
         targets = {
             24000/1001: "24000/1001",
             30000/1001: "30000/1001",
@@ -168,7 +170,6 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
 
     def _choose_cfr_rate(p: str) -> str:
         r_rat, a_rat = _ffprobe_rates(p)
-        # prefer r_frame_rate (time base) then avg, then 30/1
         cand = r_rat if r_rat != "0/0" else (a_rat if a_rat != "0/0" else "30/1")
         f = _parse_rat(cand)
         snapped = _snap_rate(f)
@@ -177,20 +178,17 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
     # --- Codecs ---
     vcodec_nv = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"]
     vcodec_sw = ["-c:v", "libx264",   "-preset", "veryfast", "-crf", "23"]
-    # note: forcing aac at 160k; adjust if you prefer 192k
     acodec    = (["-c:a", "aac", "-b:a", "160k"] if has_audio else [])
 
-    fps_rat = _choose_cfr_rate(path)  # e.g., "30000/1001" or "30/1"
+    fps_rat = _choose_cfr_rate(path)  # e.g., "30000/1001"
 
-    # --- Build filtergraph ---
+    # --- Build filtergraph text (big) and write to a temp file ---
     parts = []
-    # 1) Trim per segment from raw streams; reset PTS per clip
     for i, (st, et) in enumerate(clips):
         parts.append(f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{i}]")
         if has_audio:
             parts.append(f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
 
-    # 2) Concat back
     if has_audio:
         ci = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
         parts.append(f"{ci}concat=n={len(clips)}:v=1:a=1[vcat][acat]")
@@ -198,19 +196,23 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
         ci = "".join(f"[v{i}]" for i in range(len(clips)))
         parts.append(f"{ci}concat=n={len(clips)}:v=1:a=0[vcat]")
 
-    # 3) Force CFR on VIDEO only AFTER concat; normalize SAR; reset PTS
+    # Force CFR AFTER concat; normalize SAR; reset PTS
     parts.append(f"[vcat]fps=fps={fps_rat},setsar=1,setpts=PTS-STARTPTS[vout]")
-
-    # 4) Keep AUDIO locked by resampling AFTER concat; reset PTS
     if has_audio:
         parts.append(f"[acat]aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[aout]")
 
-    filter_complex = ";".join(parts)
+    filter_text = ";\n".join(parts) + "\n"
+
+    script_dir = _os.path.join(_tmp.gettempdir(), f"autotrim_filters_{uuid.uuid4().hex}")
+    _os.makedirs(script_dir, exist_ok=True)
+    script_path = _os.path.join(script_dir, "graph.ffilters")
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(filter_text)
 
     def _build_cmd(use_nv: bool):
         cmd = [
             "ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
-            # Harden input for mobile/VFR quirks
+            # Harden input for mobile/VFR quirks (now applies to the real MP4 input)
             "-thread_queue_size","512",
             "-ignore_editlist","1",
             "-fflags","+genpts",
@@ -219,36 +221,40 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
             cmd += hwaccel_args
         cmd += [
             "-i", path,
-            "-filter_complex", filter_complex,
+            "-filter_complex_script", script_path,
             "-map","[vout]"
         ]
         if has_audio:
             cmd += ["-map","[aout]"]
-        # Do NOT add "-vsync cfr" — fps= already makes it CFR and a second sync step can re-introduce drift
         cmd += (vcodec_nv if use_nv else vcodec_sw)
         cmd += acodec
-        # Ensure broadly compatible pixel format
-        cmd += ["-pix_fmt","yuv420p",
-                "-movflags","+faststart",
-                "-avoid_negative_ts","make_zero",
-                tmp_out]
+        cmd += [
+            "-pix_fmt","yuv420p",
+            "-movflags","+faststart",
+            "-avoid_negative_ts","make_zero",
+            # "-shortest",  # <- uncomment if you ever see AAC tail padding
+            tmp_out
+        ]
         return cmd
 
-    # --- Run & fallback ---
     def _run(cmd, desc="render"):
         return trim.run_ffmpeg_progress(cmd, total_dur, desc, on_progress_callback)
 
-    cmd_nv = _build_cmd(use_nvenc)
-    rc, err = _run(cmd_nv)
-    if rc == 0:
-        return
-    if use_nvenc and _is_nvenc_open_error(err):
-        cmd_sw = _build_cmd(False)
-        rc2, err2 = _run(cmd_sw)
-        if rc2 == 0:
+    try:
+        cmd_nv = _build_cmd(use_nvenc)
+        rc, err = _run(cmd_nv)
+        if rc == 0:
             return
-        raise RuntimeError(f"SW fallback failed: {' '.join(cmd_sw)}\n{err2}")
-    raise RuntimeError(f"Failed: {' '.join(cmd_nv)}\n{err}")
+        if use_nvenc and _is_nvenc_open_error(err):
+            cmd_sw = _build_cmd(False)
+            rc2, err2 = _run(cmd_sw)
+            if rc2 == 0:
+                return
+            raise RuntimeError(f"SW fallback failed: {' '.join(cmd_sw)}\n{err2}")
+        raise RuntimeError(f"Failed: {' '.join(cmd_nv)}\n{err}")
+    finally:
+        try: _sh.rmtree(script_dir)
+        except Exception: pass
 
 
 def _run_trim_job(payload, job_id, cancel_ev):
