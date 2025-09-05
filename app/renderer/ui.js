@@ -75,12 +75,12 @@ const DEFAULT_PRESETS = [
   {
     id: 'default_cinematic',
     title: 'Cinematic',
-    settings: { noise_db: -25.0, silence: 0.2, pad: 0.15, keep: 0.75 }
+    settings: { noise_db: -25.0, silence: 0.1, pad: 0.08, keep: 0.60 }
   },
   {
     id: 'default_tiktok',
-    title: 'TikTok',
-    settings: { noise_db: -20.0, silence: 0.1, pad: 0.05, keep: 0.5 }
+    title: 'Brainrot',
+    settings: { noise_db: -25.0, silence: 0.05, pad: 0.05, keep: 0.4 }
   }
 ];
 
