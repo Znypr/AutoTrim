@@ -13,7 +13,7 @@ JOBS = {}
 
 PARAM_CONFIG = {
     "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -25.0},
-    "silence":  {"min": 0.1,   "max": 1.0,   "step": 0.1, "default": 0.1},
+    "silence":  {"min": 0.01,   "max": 1.0,   "step": 0.01, "default": 0.10},
     "pad":      {"min": 0.0,   "max": 1.0,   "step": 0.01,"default": 0.10},
     "keep":     {"min": 0.1,   "max": 1.0,   "step": 0.05, "default": 0.50},
 }
