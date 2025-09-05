@@ -47,6 +47,28 @@ def _is_nvenc_open_error(stderr_txt:str) -> bool:
             "error while opening encoder" in s or
             "h264_nvenc" in s and "invalid argument" in s)
 
+# Add this helper near the other ffprobe helpers
+def ffprobe_src_fps(path:str) -> str:
+    """
+    Return the source FPS as a rational string (prefer r_frame_rate, fallback to avg_frame_rate).
+    """
+    try:
+        out = subprocess.check_output(
+            ["ffprobe","-v","error","-select_streams","v:0",
+             "-show_entries","stream=r_frame_rate,avg_frame_rate",
+             "-of","json", path],
+            text=True, creationflags=CREATE_NO_WINDOW
+        )
+        import json as _json
+        js = _json.loads(out)
+        st = js.get("streams", [{}])[0]
+        fps = st.get("r_frame_rate") or st.get("avg_frame_rate") or "0/0"
+        # Some files report "0/0"—treat that as 30/1 fallback.
+        return fps if fps != "0/0" else "30/1"
+    except Exception:
+        return "30/1"
+
+
 def _has_nvenc():
     try:
         out = subprocess.check_output(["ffmpeg","-hide_banner","-encoders"], text=True, creationflags=CREATE_NO_WINDOW)
@@ -100,15 +122,12 @@ def _detect_silences(path, dur, noise, silence, on_progress_callback):
     return starts, ends
 
 def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio, hwaccel_args, on_progress_callback):
-    """
-    Single-pass render using trim/atrim + concat to avoid per-clip AAC priming and PTS drift.
-    """
     vcodec_nv = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"]
     vcodec_sw = ["-c:v", "libx264",   "-preset", "veryfast", "-crf", "23"]
     acodec    = (["-c:a", "aac", "-b:a", "160k"] if has_audio else [])
 
-    # Build filtergraph:
-    # Normalize starting PTS for both streams, then create per-clip trims, then concat.
+    src_fps = ffprobe_src_fps(path)  # e.g. "60000/1001"
+
     parts = []
     parts.append("[0:v]setpts=PTS-STARTPTS[v_in]")
     if has_audio:
@@ -121,30 +140,37 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
 
     if has_audio:
         concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
-        parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[vout][aout]")
+        # Concat, then force CFR to the source FPS and normalize SAR
+        parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[vcat][aout]")
+        parts.append(f"[vcat]fps=fps={src_fps},setsar=1[vout]")
     else:
         concat_inputs = "".join(f"[v{i}]" for i in range(len(clips)))
-        parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a=0[vout]")
+        parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a=0[vcat]")
+        parts.append(f"[vcat]fps=fps={src_fps},setsar=1[vout]")
 
     filter_complex = ";".join(parts)
 
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-y",
+    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
            *hwaccel_args, "-i", path,
            "-filter_complex", filter_complex,
-           "-map", "[vout]"]
+           "-map","[vout]"]
     if has_audio:
-        cmd += ["-map", "[aout]"]
+        cmd += ["-map","[aout]"]
+
+    # Ensure CFR behavior at mux time as well (belt & suspenders)
+    cmd += ["-vsync","cfr"]
 
     if use_nvenc:
         cmd += vcodec_nv
     else:
         cmd += vcodec_sw
     cmd += acodec
-    cmd += ["-movflags", "+faststart", tmp_out]
+    cmd += ["-movflags","+faststart", tmp_out]
 
     rc, err = trim.run_ffmpeg_progress(cmd, total_dur, "render", on_progress_callback)
     if rc != 0:
         raise RuntimeError(f"Failed: {' '.join(cmd)}\n{err}")
+
 
 def _run_trim_job(payload, job_id, cancel_ev):
     """Orchestrates the trimming process by calling helper functions."""
