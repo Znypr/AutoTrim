@@ -6,6 +6,8 @@ import threading, uuid, re
 import collections, math
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
+from typing import Optional
+
 
 MAX_WORKERS = max(1, os.cpu_count() // 2)
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
@@ -67,8 +69,7 @@ def ffprobe_src_fps(path:str) -> str:
         return fps if fps != "0/0" else "30/1"
     except Exception:
         return "30/1"
-
-
+   
 def _has_nvenc():
     try:
         out = subprocess.check_output(["ffmpeg","-hide_banner","-encoders"], text=True, creationflags=CREATE_NO_WINDOW)
@@ -122,54 +123,132 @@ def _detect_silences(path, dur, noise, silence, on_progress_callback):
     return starts, ends
 
 def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio, hwaccel_args, on_progress_callback):
+    """
+    Single-pass trim+concat with robust mobile (VFR/edit list) handling.
+    Always outputs CFR matching source's nominal fps (snapped to standard rates).
+    Keeps A/V in sync by resampling audio AFTER concat and resetting PTS.
+    NVENC used when available, with automatic SW fallback.
+    """
+    import json, subprocess
+
+    # --- Helpers: choose a good CFR target from the source ---
+    def _parse_rat(s: str) -> float:
+        if not s or s == "0/0":
+            return 0.0
+        if "/" in s:
+            n, d = s.split("/")
+            d = float(d) if float(d) != 0.0 else 1.0
+            return float(n) / d
+        return float(s)
+
+    def _ffprobe_rates(p: str):
+        out = subprocess.check_output(
+            ["ffprobe","-v","error","-select_streams","v:0",
+             "-show_entries","stream=r_frame_rate,avg_frame_rate",
+             "-of","json", p],
+            text=True, creationflags=CREATE_NO_WINDOW
+        )
+        st = json.loads(out).get("streams", [{}])[0]
+        r = st.get("r_frame_rate") or "0/0"
+        a = st.get("avg_frame_rate") or "0/0"
+        return r, a
+
+    def _snap_rate(fps_float: float) -> Optional[str]:
+        # snap within ~0.2% to common broadcast rates
+        targets = {
+            24000/1001: "24000/1001",
+            30000/1001: "30000/1001",
+            60000/1001: "60000/1001",
+            24.0: "24/1", 25.0: "25/1", 30.0: "30/1", 50.0: "50/1", 60.0: "60/1"
+        }
+        for val, rat in targets.items():
+            if abs(fps_float - val) / val < 0.002:
+                return rat
+        return None
+
+    def _choose_cfr_rate(p: str) -> str:
+        r_rat, a_rat = _ffprobe_rates(p)
+        # prefer r_frame_rate (time base) then avg, then 30/1
+        cand = r_rat if r_rat != "0/0" else (a_rat if a_rat != "0/0" else "30/1")
+        f = _parse_rat(cand)
+        snapped = _snap_rate(f)
+        return snapped or cand or "30/1"
+
+    # --- Codecs ---
     vcodec_nv = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"]
     vcodec_sw = ["-c:v", "libx264",   "-preset", "veryfast", "-crf", "23"]
+    # note: forcing aac at 160k; adjust if you prefer 192k
     acodec    = (["-c:a", "aac", "-b:a", "160k"] if has_audio else [])
 
-    src_fps = ffprobe_src_fps(path)  # e.g. "60000/1001"
+    fps_rat = _choose_cfr_rate(path)  # e.g., "30000/1001" or "30/1"
 
+    # --- Build filtergraph ---
     parts = []
-    parts.append("[0:v]setpts=PTS-STARTPTS[v_in]")
-    if has_audio:
-        parts.append("[0:a]aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[a_in]")
-
+    # 1) Trim per segment from raw streams; reset PTS per clip
     for i, (st, et) in enumerate(clips):
-        parts.append(f"[v_in]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{i}]")
+        parts.append(f"[0:v]trim=start={st:.6f}:end={et:.6f},setpts=PTS-STARTPTS[v{i}]")
         if has_audio:
-            parts.append(f"[a_in]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
+            parts.append(f"[0:a]atrim=start={st:.6f}:end={et:.6f},asetpts=PTS-STARTPTS[a{i}]")
 
+    # 2) Concat back
     if has_audio:
-        concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
-        # Concat, then force CFR to the source FPS and normalize SAR
-        parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[vcat][aout]")
-        parts.append(f"[vcat]fps=fps={src_fps},setsar=1[vout]")
+        ci = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
+        parts.append(f"{ci}concat=n={len(clips)}:v=1:a=1[vcat][acat]")
     else:
-        concat_inputs = "".join(f"[v{i}]" for i in range(len(clips)))
-        parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a=0[vcat]")
-        parts.append(f"[vcat]fps=fps={src_fps},setsar=1[vout]")
+        ci = "".join(f"[v{i}]" for i in range(len(clips)))
+        parts.append(f"{ci}concat=n={len(clips)}:v=1:a=0[vcat]")
+
+    # 3) Force CFR on VIDEO only AFTER concat; normalize SAR; reset PTS
+    parts.append(f"[vcat]fps=fps={fps_rat},setsar=1,setpts=PTS-STARTPTS[vout]")
+
+    # 4) Keep AUDIO locked by resampling AFTER concat; reset PTS
+    if has_audio:
+        parts.append(f"[acat]aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[aout]")
 
     filter_complex = ";".join(parts)
 
-    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
-           *hwaccel_args, "-i", path,
-           "-filter_complex", filter_complex,
-           "-map","[vout]"]
-    if has_audio:
-        cmd += ["-map","[aout]"]
+    def _build_cmd(use_nv: bool):
+        cmd = [
+            "ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
+            # Harden input for mobile/VFR quirks
+            "-thread_queue_size","512",
+            "-ignore_editlist","1",
+            "-fflags","+genpts",
+        ]
+        if use_nv and hwaccel_args:
+            cmd += hwaccel_args
+        cmd += [
+            "-i", path,
+            "-filter_complex", filter_complex,
+            "-map","[vout]"
+        ]
+        if has_audio:
+            cmd += ["-map","[aout]"]
+        # Do NOT add "-vsync cfr" — fps= already makes it CFR and a second sync step can re-introduce drift
+        cmd += (vcodec_nv if use_nv else vcodec_sw)
+        cmd += acodec
+        # Ensure broadly compatible pixel format
+        cmd += ["-pix_fmt","yuv420p",
+                "-movflags","+faststart",
+                "-avoid_negative_ts","make_zero",
+                tmp_out]
+        return cmd
 
-    # Ensure CFR behavior at mux time as well (belt & suspenders)
-    cmd += ["-vsync","cfr"]
+    # --- Run & fallback ---
+    def _run(cmd, desc="render"):
+        return trim.run_ffmpeg_progress(cmd, total_dur, desc, on_progress_callback)
 
-    if use_nvenc:
-        cmd += vcodec_nv
-    else:
-        cmd += vcodec_sw
-    cmd += acodec
-    cmd += ["-movflags","+faststart", tmp_out]
-
-    rc, err = trim.run_ffmpeg_progress(cmd, total_dur, "render", on_progress_callback)
-    if rc != 0:
-        raise RuntimeError(f"Failed: {' '.join(cmd)}\n{err}")
+    cmd_nv = _build_cmd(use_nvenc)
+    rc, err = _run(cmd_nv)
+    if rc == 0:
+        return
+    if use_nvenc and _is_nvenc_open_error(err):
+        cmd_sw = _build_cmd(False)
+        rc2, err2 = _run(cmd_sw)
+        if rc2 == 0:
+            return
+        raise RuntimeError(f"SW fallback failed: {' '.join(cmd_sw)}\n{err2}")
+    raise RuntimeError(f"Failed: {' '.join(cmd_nv)}\n{err}")
 
 
 def _run_trim_job(payload, job_id, cancel_ev):
