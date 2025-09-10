@@ -6,8 +6,6 @@ import threading, uuid, re
 import collections, math
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
-from typing import Optional
-
 
 MAX_WORKERS = max(1, os.cpu_count() // 2)
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
@@ -15,7 +13,6 @@ JOBS = {}
 
 PARAM_CONFIG = {
     "noise_db": {"min": -50.0, "max": 0.0,   "step": 0.5, "default": -25.0},
-    "silence":  {"min": 0.01,   "max": 1.0,   "step": 0.01, "default": 0.10},
     "silence":  {"min": 0.01,   "max": 1.0,   "step": 0.01, "default": 0.1},
     "pad":      {"min": 0.0,   "max": 1.0,   "step": 0.01,"default": 0.10},
     "keep":     {"min": 0.1,   "max": 1.0,   "step": 0.05, "default": 0.50},
@@ -50,27 +47,6 @@ def _is_nvenc_open_error(stderr_txt:str) -> bool:
             "error while opening encoder" in s or
             "h264_nvenc" in s and "invalid argument" in s)
 
-# Add this helper near the other ffprobe helpers
-def ffprobe_src_fps(path:str) -> str:
-    """
-    Return the source FPS as a rational string (prefer r_frame_rate, fallback to avg_frame_rate).
-    """
-    try:
-        out = subprocess.check_output(
-            ["ffprobe","-v","error","-select_streams","v:0",
-             "-show_entries","stream=r_frame_rate,avg_frame_rate",
-             "-of","json", path],
-            text=True, creationflags=CREATE_NO_WINDOW
-        )
-        import json as _json
-        js = _json.loads(out)
-        st = js.get("streams", [{}])[0]
-        fps = st.get("r_frame_rate") or st.get("avg_frame_rate") or "0/0"
-        # Some files report "0/0"—treat that as 30/1 fallback.
-        return fps if fps != "0/0" else "30/1"
-    except Exception:
-        return "30/1"
-   
 def _has_nvenc():
     try:
         out = subprocess.check_output(["ffmpeg","-hide_banner","-encoders"], text=True, creationflags=CREATE_NO_WINDOW)
@@ -124,59 +100,6 @@ def _detect_silences(path, dur, noise, silence, on_progress_callback):
     return starts, ends
 
 def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio, hwaccel_args, on_progress_callback):
-    """
-    Single-pass trim+concat using a filter script file (avoids long cmd lines).
-    - Works with VBR/VFR/mobile inputs.
-    - Keeps A/V in sync by resampling audio AFTER concat.
-    - Forces constant FPS AFTER concat (snapped to common rates).
-    - Keeps -ignore_editlist since we now read the original MP4 directly.
-    - NVENC with graceful SW fallback.
-    """
-    import json, subprocess, tempfile as _tmp, os as _os, shutil as _sh
-    from typing import Optional
-
-    # --- Helpers: choose a good CFR target from the source ---
-    def _parse_rat(s: str) -> float:
-        if not s or s == "0/0":
-            return 0.0
-        if "/" in s:
-            n, d = s.split("/")
-            d = float(d) if float(d) != 0.0 else 1.0
-            return float(n) / d
-        return float(s)
-
-    def _ffprobe_rates(p: str):
-        out = subprocess.check_output(
-            ["ffprobe","-v","error","-select_streams","v:0",
-             "-show_entries","stream=r_frame_rate,avg_frame_rate",
-             "-of","json", p],
-            text=True, creationflags=CREATE_NO_WINDOW
-        )
-        st = json.loads(out).get("streams", [{}])[0]
-        r = st.get("r_frame_rate") or "0/0"
-        a = st.get("avg_frame_rate") or "0/0"
-        return r, a
-
-    def _snap_rate(fps_float: float) -> Optional[str]:
-        targets = {
-            24000/1001: "24000/1001",
-            30000/1001: "30000/1001",
-            60000/1001: "60000/1001",
-            24.0: "24/1", 25.0: "25/1", 30.0: "30/1", 50.0: "50/1", 60.0: "60/1"
-        }
-        for val, rat in targets.items():
-            if abs(fps_float - val) / val < 0.002:
-                return rat
-        return None
-
-    def _choose_cfr_rate(p: str) -> str:
-        r_rat, a_rat = _ffprobe_rates(p)
-        cand = r_rat if r_rat != "0/0" else (a_rat if a_rat != "0/0" else "30/1")
-        f = _parse_rat(cand)
-        snapped = _snap_rate(f)
-        return snapped or cand or "30/1"
-
-    # --- Codecs ---
     vcodec_nv = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"]
     vcodec_sw = ["-c:v", "libx264",   "-preset", "veryfast", "-crf", "23"]
     acodec    = (["-c:a", "aac", "-b:a", "160k"] if has_audio else [])
@@ -288,22 +211,18 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
             try: shutil.rmtree(clip_dir)
             except OSError: pass
 
+    if len(clips) == 1:
+        st, et = clips[0]
+        _single(st, et)
+    else:
+        _parallel_concat()
 
 def _run_trim_job(payload, job_id, cancel_ev):
     """Orchestrates the trimming process by calling helper functions."""
     def ffprobe_has_stream(path:str, kind:str) -> bool:
         try:
-            # accept any stream of the kind, not only index 0
-            sel = "a" if kind == "a" else "v"
-            out = subprocess.check_output(
-                ["ffprobe","-v","error","-select_streams", sel,
-                "-show_entries","stream=index","-of","csv=p=0", path],
-                text=True, creationflags=CREATE_NO_WINDOW
-            ).strip()
-            return bool(out)
-        except Exception:
-            return False
-
+            return bool(subprocess.check_output(["ffprobe","-v","error","-select_streams",f"{kind}:0","-show_entries","stream=index","-of","csv=p=0",path],text=True,creationflags=CREATE_NO_WINDOW).strip())
+        except Exception: return False
 
     def send_ffmpeg_error(where:str, cmd:list[str], stderr_txt:str):
         head = "\n".join((stderr_txt or "").splitlines()[:30])
