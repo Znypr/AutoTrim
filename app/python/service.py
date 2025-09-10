@@ -99,12 +99,17 @@ def _detect_silences(path, dur, noise, silence, on_progress_callback):
     
     return starts, ends
 
-def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio, hwaccel_args, on_progress_callback):
+def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio, hwaccel_args, on_progress_callback, frame_rate=None):
     vcodec_nv = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23"]
     vcodec_sw = ["-c:v", "libx264",   "-preset", "veryfast", "-crf", "23"]
     acodec    = (["-c:a", "aac", "-b:a", "160k"] if has_audio else [])
     filt_nv   = ["-vf", "format=nv12"]
     filt_sw   = []
+    
+    # --- FIX: Prepare frame rate argument if it exists ---
+    output_opts = []
+    if frame_rate and "/" in frame_rate:
+        output_opts.extend(["-r", frame_rate])
 
     def _run_final_concat(cmd, length, desc, cwd=None):
         def on_final_progress(fraction):
@@ -117,14 +122,14 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
             cmd_nv = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
                       *hwaccel_args, "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
                       "-threads","0", *filt_nv, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
-                      *vcodec_nv, *acodec, "-movflags","+faststart", tmp_out]
+                      *vcodec_nv, *acodec, *output_opts, "-movflags","+faststart", tmp_out]
             rc, err = trim.run_ffmpeg_progress(cmd_nv, length, "render", on_progress=on_progress_callback)
             if rc == 0: return
             if _is_nvenc_open_error(err):
                 cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
                           "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
                           "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
-                          *vcodec_sw, *acodec, "-movflags","+faststart", tmp_out]
+                          *vcodec_sw, *acodec, *output_opts, "-movflags","+faststart", tmp_out]
                 rc2, err2 = trim.run_ffmpeg_progress(cmd_sw, length, "render", on_progress=on_progress_callback)
                 if rc2 == 0: return
                 raise RuntimeError(f"SW fallback failed: {' '.join(cmd_sw)}\n{err2}")
@@ -133,7 +138,7 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
             cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
                       "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
                       "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
-                      *vcodec_sw, *acodec, "-movflags","+faststart", tmp_out]
+                      *vcodec_sw, *acodec, *output_opts, "-movflags","+faststart", tmp_out]
             rc, err = trim.run_ffmpeg_progress(cmd_sw, length, "render", on_progress=on_progress_callback)
             if rc != 0: raise RuntimeError(f"Failed: {' '.join(cmd_sw)}\n{err}")
 
@@ -200,6 +205,7 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-y",
                 "-f", "concat", "-safe", "0", "-i", "concat_list.txt",
                 *vcodec_sw, *acodec,
+                *output_opts,
                 "-movflags", "+faststart", os.path.abspath(tmp_out)
             ]
             
@@ -249,6 +255,12 @@ def _run_trim_job(payload, job_id, cancel_ev):
         os.makedirs(partial_dir, exist_ok=True)
         tmp_out = os.path.join(partial_dir, f"{job_id}.partial{os.path.splitext(out)[1]}")
         dur = trim.ffprobe_duration(path)
+        
+        # --- FIX: Probe for original frame rate ---
+        try:
+            frame_rate = trim.ffprobe_frame_rate(path)
+        except Exception:
+            frame_rate = None
 
         def on_detect(fr): send("progress", stage="detect", value=fr, hint_total=dur, job_id=job_id, source_path=path, kind="trim")
         send("progress", stage="detect", value=0.01, hint_total=dur, job_id=job_id, source_path=path, kind="trim")
@@ -266,7 +278,8 @@ def _run_trim_job(payload, job_id, cancel_ev):
                               use_nvenc=_has_nvenc(), 
                               has_audio=ffprobe_has_stream(path, "a"), 
                               hwaccel_args=_gpu_decode_args(), 
-                              on_progress_callback=on_render)
+                              on_progress_callback=on_render,
+                              frame_rate=frame_rate)
         
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         shutil.move(tmp_out, out)

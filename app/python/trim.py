@@ -74,6 +74,22 @@ def ffprobe_duration(path: str) -> float:
         text=True, startupinfo=si, creationflags=flags
     ).strip())
 
+# --- FIX: New function to get the video's frame rate ---
+def ffprobe_frame_rate(path: str) -> str:
+    si = None
+    flags = 0
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        flags = 0x08000000 # CREATE_NO_WINDOW
+    
+    return subprocess.check_output(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", 
+         "-show_entries", "stream=r_frame_rate", 
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        text=True, startupinfo=si, creationflags=flags
+    ).strip()
+
 # ---- FFmpeg execution with progress ------------------------------------------
 
 def _parse_progress_time(val: str):
