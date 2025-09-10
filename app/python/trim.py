@@ -93,9 +93,10 @@ def _parse_progress_time(val: str):
         return None
 
 def run_ffmpeg_progress(cmd: List[str], total: float, desc: str,
-                        on_progress=None) -> Tuple[int, str]:
+                        on_progress=None, cwd=None) -> Tuple[int, str]:
     proc = subprocess.Popen(
         cmd,
+        cwd=cwd,
         stdin=subprocess.DEVNULL, 
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
