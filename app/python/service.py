@@ -73,13 +73,14 @@ def send(evt, **data):
     sys.stdout.write(json.dumps({"event": evt, **data}) + "\n")
     sys.stdout.flush()
 
-def _detect_silences(path, dur, noise, silence, on_progress_callback):
+def _detect_silences(path, dur, noise, silence, audio_stream_index, on_progress_callback):
     """
     Runs FFmpeg silencedetect using a simplified, direct analysis method to improve reliability.
     """
     detect_cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "info", "-progress", "pipe:1", "-nostdin",
         "-i", path,
+        "-map", f"0:a:{audio_stream_index}",
         "-af", f"silencedetect=noise={noise}dB:d={silence}",
         "-vn",          # Ignore video stream
         "-f", "null", "-"
@@ -121,14 +122,14 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
         if use_nvenc:
             cmd_nv = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
                       *hwaccel_args, "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
-                      "-threads","0", *filt_nv, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                      "-threads","0", *filt_nv, "-map","0:v:0", *(["-map","0:a"] if has_audio else ["-an"]),
                       *vcodec_nv, *acodec, *output_opts, "-movflags","+faststart", tmp_out]
             rc, err = trim.run_ffmpeg_progress(cmd_nv, length, "render", on_progress=on_progress_callback)
             if rc == 0: return
             if _is_nvenc_open_error(err):
                 cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
                           "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
-                          "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                          "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a"] if has_audio else ["-an"]),
                           *vcodec_sw, *acodec, *output_opts, "-movflags","+faststart", tmp_out]
                 rc2, err2 = trim.run_ffmpeg_progress(cmd_sw, length, "render", on_progress=on_progress_callback)
                 if rc2 == 0: return
@@ -137,7 +138,7 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
         else:
             cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-progress","pipe:1","-y",
                       "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}",
-                      "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
+                      "-threads","0", *filt_sw, "-map","0:v:0", *(["-map","0:a"] if has_audio else ["-an"]),
                       *vcodec_sw, *acodec, *output_opts, "-movflags","+faststart", tmp_out]
             rc, err = trim.run_ffmpeg_progress(cmd_sw, length, "render", on_progress=on_progress_callback)
             if rc != 0: raise RuntimeError(f"Failed: {' '.join(cmd_sw)}\n{err}")
@@ -156,15 +157,15 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
                 if use_nvenc:
                     cmd_nv = ["ffmpeg","-hide_banner","-loglevel","error","-y", *hwaccel_args,
                               "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}", "-threads","0", 
-                              *filt_nv, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
-                              *vcodec_nv, *bsf_args, *acodec, target]
+                              *filt_nv, "-map","0:v:0", *(["-map","0:a"] if has_audio else ["-an"]),
+                              *vcodec_nv, *bsf_args, *acodec, *output_opts, target]
                     rc, err = trim.run_ffmpeg_progress(cmd_nv, length, f"clip {i+1}/{len(clips)}")
                     if rc == 0: return target
                     if _is_nvenc_open_error(err):
                         cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-y",
                                   "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}", "-threads","0", 
-                                  *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
-                                  *vcodec_sw, *bsf_args, *acodec, target]
+                                  *filt_sw, "-map","0:v:0", *(["-map","0:a"] if has_audio else ["-an"]),
+                                  *vcodec_sw, *bsf_args, *acodec, *output_opts, target]
                         rc2, err2 = trim.run_ffmpeg_progress(cmd_sw, length, f"clip {i+1}/{len(clips)}")
                         if rc2 == 0: return target
                         raise RuntimeError(f"Failed to create clip {i} (sw fallback): {' '.join(cmd_sw)}\n{err2}")
@@ -172,8 +173,8 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
                 else:
                     cmd_sw = ["ffmpeg","-hide_banner","-loglevel","error","-y",
                               "-ss", f"{st:.6f}", "-i", path, "-t", f"{length:.6f}", "-threads","0", 
-                              *filt_sw, "-map","0:v:0", *(["-map","0:a:0"] if has_audio else ["-an"]),
-                              *vcodec_sw, *bsf_args, *acodec, target]
+                              *filt_sw, "-map","0:v:0", *(["-map","0:a"] if has_audio else ["-an"]),
+                              *vcodec_sw, *bsf_args, *acodec, *output_opts, target]
                     rc, err = trim.run_ffmpeg_progress(cmd_sw, length, f"clip {i+1}/{len(clips)}")
                     if rc != 0: raise RuntimeError(f"Failed to create clip {i} (sw): {' '.join(cmd_sw)}\n{err}")
                     return target
@@ -204,8 +205,8 @@ def _render_trimmed_video(path, tmp_out, clips, total_dur, use_nvenc, has_audio,
             cmd_concat = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-y",
                 "-f", "concat", "-safe", "0", "-i", "concat_list.txt",
-                *vcodec_sw, *acodec,
-                *output_opts,
+                "-map", "0:v", *(["-map", "0:a"] if has_audio else []),
+                "-c", "copy",
                 "-movflags", "+faststart", os.path.abspath(tmp_out)
             ]
             
@@ -262,9 +263,11 @@ def _run_trim_job(payload, job_id, cancel_ev):
         except Exception:
             frame_rate = None
 
+        audio_stream_index = int(payload.get("audio_stream_index", 0))
+
         def on_detect(fr): send("progress", stage="detect", value=fr, hint_total=dur, job_id=job_id, source_path=path, kind="trim")
         send("progress", stage="detect", value=0.01, hint_total=dur, job_id=job_id, source_path=path, kind="trim")
-        starts, ends = _detect_silences(path, dur, noise, silence, on_detect)
+        starts, ends = _detect_silences(path, dur, noise, silence, audio_stream_index, on_detect)
         
         segs = trim.build_speaking_segments(starts, ends, dur, pad, keep)
         if not segs: raise RuntimeError("No keepable segments found.")
@@ -317,7 +320,8 @@ def cmd_analyze(payload):
             def on_analyze_progress(frac):
                 send("progress", stage="analyze", value=min(0.99, max(0.0, frac)), hint_total=dur, job_id=job_id)
 
-            vals = trim.analyze_levels(path, dur, on_progress=on_analyze_progress)
+            audio_stream_index = int(payload.get("audio_stream_index", 0))
+            vals = trim.analyze_levels(path, dur, audio_stream_index=audio_stream_index, on_progress=on_analyze_progress)
             vals = [v for v in vals if math.isfinite(v)]
             if not vals: raise RuntimeError("No audio levels parsed from video.")
 
@@ -333,7 +337,7 @@ def cmd_analyze(payload):
 
             total = sum(counts.values()) or 1
             ys = [(counts.get(s, 0) / total) * 100.0 for s in edges[:-1]]
-            send("analysis_result", ok=True, x=edges[:-1], y=ys, job_id=job_id)
+            send("analysis_result", ok=True, x=edges[:-1], y=ys, job_id=job_id, audio_stream_index=audio_stream_index, source_path=path)
             send("job", id=job_id, status="finished", ok=True, kind="analyze")
         except RuntimeError as e:
             if "CANCELLED" in str(e): send("job", id=job_id, status="cancelled", kind="analyze")
@@ -399,7 +403,8 @@ def cmd_probe(payload):
     try:
         dur = trim.ffprobe_duration(path)
         size_mb = round(os.path.getsize(path) / (1024*1024), 2)
-        return {"ok": True, "duration": float(dur), "size_mb": size_mb}
+        audio_streams = trim.ffprobe_audio_stream_count(path)
+        return {"ok": True, "duration": float(dur), "size_mb": size_mb, "audio_streams": audio_streams}
     except Exception as e:
         return {"ok": False, "error": f"ffprobe failed: {e}"}
 

@@ -19,6 +19,9 @@
   "build": {
     "appId": "com.znypr.autotrim",
     "productName": "AutoTrim",
+    "directories": {
+      "output": "release"
+    },
     "asar": true,
     "files": [
       "main.js",
@@ -29,6 +32,10 @@
       {
         "from": "dist/service.exe",
         "to": "python/service.exe"
+      },
+      {
+        "from": "python/ffmpeg",
+        "to": "python/ffmpeg"
       }
     ],
     "win": {

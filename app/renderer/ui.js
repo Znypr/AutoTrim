@@ -314,11 +314,15 @@ function handleAnalysisResult(msg) {
 }
 async function startAnalysisForIndex(index) {
     const file = state.files[index];
-    if (!file || file.jobId || file.analysis) return;
+    if (!file || file.status === 'started' || (file.analyses && file.analyses[file.selected_audio_track])) return;
     setStatus(`Analyzing...`);
     renderHist([], [], -60, 0);
     try {
-        const res = await window.py.send("analyze", { path: file.path, min_db: -80, max_db: 0, bins: 0.1 });
+        const payload = { path: file.path, min_db: -80, max_db: 0, bins: 0.1 };
+        if (file.selected_audio_track !== undefined) {
+            payload.audio_stream_index = file.selected_audio_track;
+        }
+        const res = await window.py.send("analyze", payload);
         if (res?.ok && res.job) {
             file.jobId = res.job;
         } else {
@@ -386,8 +390,26 @@ async function displayVideo(index) {
   DOM.navStatus.textContent = `${index + 1} of ${state.files.length}`;
   await displayFileInformation(file.path);
 
-  if (file.analysis) {
-    renderHist(file.analysis.xs, file.analysis.ys);
+  if (DOM.audioTrackContainer) {
+    if (file.audio_streams > 1) {
+      DOM.audioTrackContainer.style.display = 'flex';
+      DOM.audioTrackContainer.style.alignItems = 'center';
+      DOM.audioTrackSelect.innerHTML = '';
+      for (let i = 0; i < file.audio_streams; i++) {
+        const opt = document.createElement('option');
+        opt.value = i;
+        opt.textContent = `Track ${i + 1}`;
+        DOM.audioTrackSelect.appendChild(opt);
+      }
+      DOM.audioTrackSelect.value = file.selected_audio_track;
+    } else {
+      DOM.audioTrackContainer.style.display = 'none';
+    }
+  }
+
+  if (file.analyses && file.analyses[file.selected_audio_track]) {
+    const data = file.analyses[file.selected_audio_track];
+    renderHist(data.xs, data.ys);
     setStatus("Ready.");
     setProgress(0);
   } else {
@@ -405,10 +427,12 @@ async function loadFiles(paths) {
         return {
             path: p,
             duration: res.ok ? res.duration : 0,
+            audio_streams: res.ok ? (res.audio_streams || 1) : 1,
+            selected_audio_track: 0,
             progress: 0,
             stage: null,
             thumb: null,
-            analysis: null,
+            analyses: {},
             jobId: null,
             outPath: null,
             status: null
@@ -701,7 +725,7 @@ async function handleStartTrimClick() {
     const outRes = await window.sys.getDefaultSavePath({ suggestedName });
     if (!outRes.ok) { file.status = 'error'; errors++; continue; }
 
-    const payload = { ...getCurrentSliderValues(), path: file.path, out: outRes.path };
+    const payload = { ...getCurrentSliderValues(), path: file.path, out: outRes.path, audio_stream_index: file.selected_audio_track || 0 };
     try {
       const trimRes = await window.py.send("trim", payload);
       if (trimRes?.ok && trimRes.job) {
@@ -816,6 +840,20 @@ function wireEventListeners() {
   DOM.pickBtn?.addEventListener("click", handlePickFileClick);
   DOM.fileInput?.addEventListener("change", handleFileInputChange);
 
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    const paths = Array.from(files).map(f => f.path).filter(Boolean);
+    if (paths.length > 0) await loadFiles(paths);
+  });
+
   DOM.toggleViewBtn?.addEventListener("click", () => {
     const file = state.files[state.currentIndex];
     if (!file || !file.outPath) return;
@@ -883,8 +921,9 @@ function wireEventListeners() {
   
   [DOM.minDbRange, DOM.maxDbRange].forEach((inp) => inp?.addEventListener("input", () => {
     updateRangeFill();
-    if (state.files[state.currentIndex]?.analysis) {
-      renderHist(state.files[state.currentIndex].analysis.xs, state.files[state.currentIndex].analysis.ys);
+    const file = state.files[state.currentIndex];
+    if (file?.analyses?.[file.selected_audio_track]) {
+      renderHist(file.analyses[file.selected_audio_track].xs, file.analyses[file.selected_audio_track].ys);
     }
   }));
 
@@ -910,6 +949,31 @@ function wireEventListeners() {
 }
 
 async function initializeApp() {
+  const trackContainer = document.createElement('div');
+  trackContainer.id = 'audioTrackContainer';
+  trackContainer.style.display = 'none';
+  trackContainer.style.marginTop = '15px';
+  trackContainer.innerHTML = `<label for="audioTrackSelect" style="color:#cfcfcf; margin-right:10px; font-size:13px;">Detection Track:</label>
+                              <select id="audioTrackSelect" style="background:#2a2a2a; color:#fff; border:1px solid #444; border-radius:4px; padding:4px 8px; font-size:13px; outline:none; cursor:pointer;"></select>`;
+  DOM.paramCard.appendChild(trackContainer);
+  DOM.audioTrackContainer = trackContainer;
+  DOM.audioTrackSelect = trackContainer.querySelector('#audioTrackSelect');
+  
+  DOM.audioTrackSelect.addEventListener('change', (e) => {
+    const file = state.files[state.currentIndex];
+    if (file) {
+      file.selected_audio_track = parseInt(e.target.value, 10);
+      if (file.analyses && file.analyses[file.selected_audio_track]) {
+        const data = file.analyses[file.selected_audio_track];
+        renderHist(data.xs, data.ys);
+        setStatus("Ready.");
+        setProgress(0);
+      } else {
+        startAnalysisForIndex(state.currentIndex);
+      }
+    }
+  });
+
   wireEventListeners();
   initializeBackendEventHandler();
   await loadSettings();

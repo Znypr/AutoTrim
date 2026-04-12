@@ -60,6 +60,25 @@ def _patch_ffmpeg_path():
         os.environ["PATH"] = ffdir + os.pathsep + os.environ.get("PATH", "")
 _patch_ffmpeg_path()
 
+def ffprobe_audio_stream_count(path: str) -> int:
+    si = None
+    flags = 0
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        flags = 0x08000000 # CREATE_NO_WINDOW
+    
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "a", 
+             "-show_entries", "stream=index", 
+             "-of", "csv=p=0", path],
+            text=True, startupinfo=si, creationflags=flags
+        )
+        return len([line for line in out.strip().splitlines() if line.strip()])
+    except Exception:
+        return 0
+
 def ffprobe_duration(path: str) -> float:
     si = None
     flags = 0
@@ -227,7 +246,7 @@ def build_speaking_segments(starts: List[float], ends: List[float], dur: float,
 
 # ---- Histogram Analysis ------------------------------------------------------
 
-def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]:
+def analyze_levels(input_path: str, dur: float, audio_stream_index: int = 0, on_progress=None) -> List[float]:
     """
     Analyzes audio levels by decoding the audio to raw PCM and calculating RMS
     values in Python with numpy. This method is highly reliable.
@@ -242,6 +261,7 @@ def analyze_levels(input_path: str, dur: float, on_progress=None) -> List[float]
     cmd = [
         "ffmpeg", "-hide_banner", "-y",
         "-i", input_path,
+        "-map", f"0:a:{audio_stream_index}",
         "-f", "s16le",
         "-ac", "1",
         "-ar", str(sample_rate),
