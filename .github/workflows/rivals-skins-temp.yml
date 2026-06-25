@@ -1,0 +1,278 @@
+name: Temporary Roblox RIVALS skin export
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/rivals-skins-temp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-skins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check requests beautifulsoup4 pillow
+
+      - name: Download and package every skin icon
+        shell: python
+        run: |
+          import csv
+          import hashlib
+          import io
+          import json
+          import re
+          import shutil
+          import unicodedata
+          import urllib.parse
+          from collections import Counter
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import requests
+          from bs4 import BeautifulSoup
+          from PIL import Image
+
+          API_URL = "https://robloxrivals.fandom.com/api.php"
+          PAGE_URL = "https://robloxrivals.fandom.com/wiki/Skins"
+          ROOT = Path("export") / "roblox_rivals_weapon_skins"
+          ROOT.mkdir(parents=True, exist_ok=True)
+
+          session = requests.Session()
+          session.headers.update({
+              "User-Agent": "Mozilla/5.0 (compatible; RIVALS-skin-export/1.0)",
+              "Accept": "*/*",
+          })
+
+          response = session.get(
+              API_URL,
+              params={
+                  "action": "parse",
+                  "page": "Skins",
+                  "prop": "text",
+                  "format": "json",
+                  "formatversion": "2",
+              },
+              timeout=60,
+          )
+          response.raise_for_status()
+          payload = response.json()
+          html = payload["parse"]["text"]
+          soup = BeautifulSoup(html, "html.parser")
+
+          rarity_names = {
+              "common": "Common",
+              "rare": "Rare",
+              "legendary": "Legendary",
+              "mythical": "Mythical",
+              "unique": "Unique",
+              "glorious": "Glorious",
+              "unobtainable": "Unobtainable",
+          }
+          rarity_order = {
+              "Common": 1,
+              "Rare": 2,
+              "Legendary": 3,
+              "Mythical": 4,
+              "Unique": 5,
+              "Glorious": 6,
+              "Unobtainable": 7,
+          }
+
+          def clean_text(node):
+              return re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+
+          def safe_name(value):
+              value = unicodedata.normalize("NFKC", value)
+              value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value)
+              value = re.sub(r"\s+", " ", value).strip().rstrip(".")
+              return value or "Unknown"
+
+          def image_url_and_filename(img):
+              src = img.get("data-src") or img.get("src") or ""
+              if src.startswith("//"):
+                  src = "https:" + src
+              if not src.startswith("http"):
+                  src = urllib.parse.urljoin(PAGE_URL, src)
+
+              path_parts = urllib.parse.urlparse(src).path.split("/")
+              filename = None
+              if "revision" in path_parts:
+                  revision_index = path_parts.index("revision")
+                  if revision_index > 0:
+                      filename = urllib.parse.unquote(path_parts[revision_index - 1])
+
+              if not filename:
+                  image_name = img.get("data-image-name")
+                  if image_name:
+                      filename = image_name
+
+              if not filename:
+                  alt = img.get("alt", "skin")
+                  filename = alt.replace(" ", "_") + ".png"
+
+              normalized = filename.replace(" ", "_")
+              digest = hashlib.md5(normalized.encode("utf-8")).hexdigest()
+              quoted = urllib.parse.quote(normalized, safe="'()!$&,-._~")
+              original = (
+                  "https://static.wikia.nocookie.net/robloxrivals/images/"
+                  f"{digest[0]}/{digest[:2]}/{quoted}/revision/latest"
+              )
+              return original, src, filename
+
+          records = []
+          for table in soup.select("table.count-table[data-type='skin']"):
+              data_id = (table.get("data-id") or "").lower().strip()
+              rarity = rarity_names.get(data_id, data_id.title() or "Unknown")
+              for row in table.select("tr"):
+                  cells = row.find_all("td", recursive=False)
+                  if len(cells) < 3:
+                      continue
+                  img = cells[0].find("img")
+                  if not img:
+                      continue
+                  original_url, fallback_url, wiki_filename = image_url_and_filename(img)
+                  records.append({
+                      "rarity": rarity,
+                      "skin_name": clean_text(cells[1]) if len(cells) > 1 else wiki_filename,
+                      "weapon": clean_text(cells[2]) if len(cells) > 2 else "Unknown",
+                      "obtainment_method": clean_text(cells[3]) if len(cells) > 3 else "",
+                      "special_effects": clean_text(cells[4]) if len(cells) > 4 else "",
+                      "wiki_filename": wiki_filename,
+                      "source_url": original_url,
+                      "fallback_url": fallback_url,
+                  })
+
+          if len(records) < 300:
+              raise RuntimeError(f"Only found {len(records)} skin rows; expected roughly 346.")
+
+          records.sort(key=lambda r: (rarity_order.get(r["rarity"], 99), r["weapon"].casefold(), r["skin_name"].casefold()))
+          cache = {}
+          manifest = []
+          failed = []
+
+          for index, record in enumerate(records, start=1):
+              rarity_folder = f"{rarity_order.get(record['rarity'], 99):02d}_{safe_name(record['rarity'])}"
+              weapon_folder = safe_name(record["weapon"])
+              output_dir = ROOT / rarity_folder / weapon_folder
+              output_dir.mkdir(parents=True, exist_ok=True)
+              output_file = output_dir / f"{index:03d}_{safe_name(record['skin_name'])}.png"
+
+              cache_key = record["wiki_filename"]
+              status = "ok"
+              error = ""
+              used_url = record["source_url"]
+              try:
+                  if cache_key not in cache:
+                      content = None
+                      last_error = None
+                      for candidate in (record["source_url"], record["fallback_url"]):
+                          try:
+                              r = session.get(candidate, timeout=60)
+                              r.raise_for_status()
+                              if not r.content:
+                                  raise ValueError("empty response")
+                              content = r.content
+                              used_url = candidate
+                              break
+                          except Exception as exc:
+                              last_error = exc
+                      if content is None:
+                          raise last_error or RuntimeError("download failed")
+
+                      with Image.open(io.BytesIO(content)) as image:
+                          image.seek(0)
+                          if image.mode in ("P", "LA") or (image.mode == "L" and "transparency" in image.info):
+                              image = image.convert("RGBA")
+                          elif image.mode not in ("RGB", "RGBA", "L"):
+                              image = image.convert("RGBA")
+                          buffer = io.BytesIO()
+                          image.save(buffer, format="PNG", optimize=True)
+                          png_bytes = buffer.getvalue()
+                          cache[cache_key] = (png_bytes, image.width, image.height, used_url)
+
+                  png_bytes, width, height, used_url = cache[cache_key]
+                  output_file.write_bytes(png_bytes)
+                  sha256 = hashlib.sha256(png_bytes).hexdigest()
+              except Exception as exc:
+                  status = "failed"
+                  error = f"{type(exc).__name__}: {exc}"
+                  width = height = 0
+                  sha256 = ""
+                  failed.append({**record, "error": error})
+
+              manifest.append({
+                  "index": index,
+                  "rarity": record["rarity"],
+                  "skin_name": record["skin_name"],
+                  "weapon": record["weapon"],
+                  "obtainment_method": record["obtainment_method"],
+                  "special_effects": record["special_effects"],
+                  "wiki_filename": record["wiki_filename"],
+                  "source_url": used_url,
+                  "output_path": str(output_file.relative_to(ROOT.parent)) if status == "ok" else "",
+                  "width": width,
+                  "height": height,
+                  "sha256": sha256,
+                  "status": status,
+                  "error": error,
+              })
+              print(f"[{index:03d}/{len(records)}] {status}: {record['weapon']} — {record['skin_name']}")
+
+          fields = list(manifest[0].keys())
+          with (ROOT / "manifest.csv").open("w", newline="", encoding="utf-8-sig") as file:
+              writer = csv.DictWriter(file, fieldnames=fields)
+              writer.writeheader()
+              writer.writerows(manifest)
+
+          (ROOT / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+          counts = Counter(item["rarity"] for item in manifest)
+          readme = [
+              "Roblox RIVALS weapon skin icons",
+              "=================================",
+              "",
+              f"Source: {PAGE_URL}",
+              f"Generated: {datetime.now(timezone.utc).isoformat()}",
+              f"Wiki rows found: {len(manifest)}",
+              f"PNG files saved: {sum(item['status'] == 'ok' for item in manifest)}",
+              f"Failed downloads: {len(failed)}",
+              "",
+              "Rows by wiki category:",
+          ]
+          readme.extend(f"- {name}: {counts[name]}" for name in sorted(counts, key=lambda n: rarity_order.get(n, 99)))
+          readme.extend([
+              "",
+              "The archive preserves every row listed on the wiki, including duplicates or test/unobtainable entries.",
+              "All downloaded images were converted to actual PNG files. See manifest.csv for source URLs and hashes.",
+          ])
+          (ROOT / "README.txt").write_text("\n".join(readme) + "\n", encoding="utf-8")
+
+          if failed:
+              (ROOT / "failed_downloads.json").write_text(json.dumps(failed, ensure_ascii=False, indent=2), encoding="utf-8")
+
+          shutil.make_archive("roblox_rivals_all_weapon_skins", "zip", root_dir=ROOT.parent, base_dir=ROOT.name)
+          print(f"Created archive with {len(manifest) - len(failed)} PNGs; {len(failed)} failures.")
+
+          if failed:
+              raise RuntimeError(f"{len(failed)} skin icons failed to download; see failed_downloads.json")
+
+      - name: Upload ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roblox-rivals-weapon-skins
+          path: roblox_rivals_all_weapon_skins.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
